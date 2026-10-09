@@ -18,8 +18,8 @@ const OPENCHAMBER_SETTINGS_FILE = path.join(
 const getSessionAssistTargets = () => {
   const settings = readMergedSettingsSync({ fs, path, settingsFilePath: OPENCHAMBER_SETTINGS_FILE });
   return {
-    recap: settings.sessionRecapEnabled !== false,
-    suggestion: settings.sessionSuggestionEnabled !== false,
+    recap: Boolean(settings.sessionRecapEnabled),
+    suggestion: Boolean(settings.sessionSuggestionEnabled),
   };
 };
 
@@ -188,6 +188,8 @@ export const createSessionAssistRuntime = ({
 
   const startGeneration = (sessionId, directory, armedAt) => {
     if (stopped) return;
+    const targets = getTargets();
+    if (!targets?.recap && !targets?.suggestion) return;
     if (inflight.has(sessionId)) {
       ready.set(sessionId, { directory, armedAt });
       return;
@@ -210,6 +212,8 @@ export const createSessionAssistRuntime = ({
 
   const armTimer = (sessionId, directory) => {
     clearTimer(sessionId);
+    const targets = getTargets();
+    if (!targets?.recap && !targets?.suggestion) return;
     const armedAt = Date.now();
     const timer = setTimeout(() => {
       timers.delete(sessionId);
@@ -221,6 +225,8 @@ export const createSessionAssistRuntime = ({
 
   const processPayload = (payload, directoryHint = '') => {
     if (stopped) return;
+    const targets = getTargets();
+    if (!targets?.recap && !targets?.suggestion) return;
     const status = extractSessionStatus(payload);
     if (status) {
       if (status.type === 'idle') armTimer(status.sessionId, status.directory || directoryHint);

@@ -810,6 +810,7 @@ const sessionAssistRuntime = createSessionAssistRuntime({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   getSmallModelService: async () => import('./lib/small-model/index.js'),
+  getTargets: () => ({ recap: false, suggestion: false }),
 });
 
 const sessionGoalRuntime = createSessionGoalRuntime({
@@ -957,9 +958,7 @@ const openCodeWatcherRuntime = createOpenCodeWatcherRuntime({
   },
 });
 
-// Session-assist subscribes to the hub directly: it needs the envelope's
-// directory to route its own OpenCode calls to the right instance.
-console.log('[session-assist] listening for session events');
+// Session-assist and session-goals subscribe to the hub directly
 globalMessageStreamHub.subscribeEvent((event) => {
   const raw = event?.payload;
   const payload = raw?.payload && typeof raw.payload === 'object' ? raw.payload : raw;

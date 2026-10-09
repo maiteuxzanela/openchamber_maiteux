@@ -1,8 +1,11 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import {
   GUEST_REQUEST_RESPONSE_MAX,
@@ -175,6 +178,61 @@ const stopEpochs = new Map();
 
 const stopEpochOf = (guestId) => stopEpochs.get(guestId) ?? 0;
 
+export const killOrphanProcessesForEntry = async (absoluteEntry) => {
+  if (!absoluteEntry || typeof absoluteEntry !== 'string') return;
+  try {
+    if (process.platform === 'win32') return;
+    const pids = [];
+    try {
+      const { stdout } = await execFileAsync('pgrep', ['-f', absoluteEntry]);
+      for (const line of stdout.split('\n')) {
+        const trimmed = line.trim();
+        if (/^\d+$/.test(trimmed)) {
+          pids.push(Number.parseInt(trimmed, 10));
+        }
+      }
+    } catch {
+      // pgrep exit code 1 means no matching process found
+    }
+    if (pids.length === 0) {
+      try {
+        const { stdout } = await execFileAsync('ps', ['-eo', 'pid,args']);
+        for (const line of stdout.split('\n')) {
+          if (line.includes(absoluteEntry)) {
+            const match = line.trim().match(/^(\d+)/);
+            if (match) {
+              pids.push(Number.parseInt(match[1], 10));
+            }
+          }
+        }
+      } catch {
+        // ps failed
+      }
+    }
+    const myPid = process.pid;
+    const targetPids = [...new Set(pids)].filter((pid) => pid && pid !== myPid && pid > 1);
+    for (const pid of targetPids) {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        // ignore already dead
+      }
+    }
+    if (targetPids.length > 0) {
+      await sleep(150);
+      for (const pid of targetPids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('[guests] failed to clean orphan processes for entry:', absoluteEntry, error?.message || error);
+  }
+};
+
 /**
  * A user-facing stop (Pause, Remove, withdrawn approval, socket change,
  * host quit): ends the process and cancels any request or start in flight.
@@ -182,7 +240,12 @@ const stopEpochOf = (guestId) => stopEpochs.get(guestId) ?? 0;
  */
 export const stopGuestService = async (guestId) => {
   stopEpochs.set(guestId, stopEpochOf(guestId) + 1);
+  const runtime = runtimes.get(guestId);
+  const absoluteEntry = runtime ? path.resolve(runtime.packageRoot, runtime.entry) : null;
   await discardRuntime(guestId);
+  if (absoluteEntry) {
+    await killOrphanProcessesForEntry(absoluteEntry);
+  }
 };
 
 /**
@@ -290,6 +353,11 @@ const startGuestService = async ({
     throw new GuestServiceError('Service entry is missing.', 'NO_SERVICE');
   }
 
+  if (cancelled()) {
+    throw stoppedError();
+  }
+  // Kill any pre-existing orphan process with the same entrypoint before spawning
+  await killOrphanProcessesForEntry(absoluteEntry);
   if (cancelled()) {
     throw stoppedError();
   }

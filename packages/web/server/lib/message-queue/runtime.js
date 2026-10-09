@@ -35,6 +35,7 @@ const HOLD_DEFAULT_TTL_MS = 5 * 60 * 1000;
 const HOLD_MAX_TTL_MS = 10 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 15_000;
 const MESSAGE_TAIL_LIMIT = 2;
+const UNFINISHED_TAIL_STALE_MS = 30_000;
 
 const ATTACHMENT_SOURCES = new Set(['local', 'server', 'vscode']);
 // Context captured with a queued message (see QueuedContextPart in the UI
@@ -406,11 +407,17 @@ export function createMessageQueueRuntime({
     const lastTime = asRecord(last?.time);
     if (last?.role === 'assistant' && asCount(lastTime?.completed) === null) {
       const created = asCount(lastTime?.created);
-      if (created === null || created >= runtimeStartedAt) return false;
-      // Unfinished tail from before this runtime started: its run died with
-      // the previous server, so it must not block delivery. (A missing
-      // created timestamp stays conservative and blocks, as before.)
-      console.log(`[message-queue] ignoring pre-boot unfinished tail for ${sessionId}`);
+      if (created !== null && (now() - created > UNFINISHED_TAIL_STALE_MS)) {
+        // Stale unfinished tail: created more than 30 seconds ago, so don't block
+        console.log(`[message-queue] ignoring stale unfinished tail (>30s) for ${sessionId}`);
+      } else if (created === null || created >= runtimeStartedAt) {
+        return false;
+      } else {
+        // Unfinished tail from before this runtime started: its run died with
+        // the previous server, so it must not block delivery. (A missing
+        // created timestamp stays conservative and blocks, as before.)
+        console.log(`[message-queue] ignoring pre-boot unfinished tail for ${sessionId}`);
+      }
     }
     return true;
   };

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -270,6 +271,50 @@ describe('restart after the process died', () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       expect(await proxyGuestServiceRequest(params)).toEqual({ status: 200, body: '{"pong":true}' });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('kills existing orphan process for the same entry before spawning', async () => {
+    const { dir, persistPath, packageRoot } = await writeFixture();
+    try {
+      await setCapabilityGrants('docker', persistPath, ['service']);
+      const entryPath = path.join(packageRoot, 'service', 'main.js');
+      // Spawn an external orphan process with the same entrypoint
+      const orphan = spawn(process.execPath, [entryPath], {
+        cwd: packageRoot,
+        env: { ...process.env, OPENCHAMBER_SERVICE_PORT: '54321', OPENCHAMBER_SERVICE_TOKEN: 'orphan-token' },
+        stdio: 'ignore',
+      });
+      const orphanPid = orphan.pid;
+      expect(orphanPid).toBeDefined();
+
+      const params = {
+        guestId: 'docker',
+        packageRoot,
+        service: { entry: 'service/main.js', permissions: { exec: ['docker'] } },
+        granted: ['service'],
+        persistPath,
+        method: 'GET',
+        path: '/ping',
+      };
+
+      const res = await proxyGuestServiceRequest(params);
+      expect(res).toEqual({ status: 200, body: '{"pong":true}' });
+      expect(getServiceStatus('docker')).toBe('ready');
+
+      // The orphan process should have been killed
+      let orphanAlive = true;
+      try {
+        process.kill(orphanPid, 0);
+      } catch {
+        orphanAlive = false;
+      }
+      expect(orphanAlive).toBe(false);
+
+      const runningPid = readServicePid('docker');
+      expect(runningPid).not.toBe(orphanPid);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

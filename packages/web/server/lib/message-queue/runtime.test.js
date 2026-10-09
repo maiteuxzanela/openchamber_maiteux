@@ -238,6 +238,23 @@ describe('message queue runtime', () => {
     expect(openCode.state.sent[0].path).toBe(`/session/${SESSION}/prompt_async`);
   });
 
+  it('delivers past a stale unfinished tail (>30s) created during this runtime', async () => {
+    let currentTime = 10_000;
+    const { runtime, openCode, emit } = createRuntime({ now: () => currentTime });
+    runtime.start();
+    openCode.state.tail = [{ info: { role: 'assistant', time: { created: 10_000 } } }];
+    await runtime.enqueue(SESSION, DIRECTORY, item());
+    emit({ type: 'session.status', properties: { sessionID: SESSION, status: { type: 'idle' } } });
+    await settle();
+    expect(openCode.state.sent).toHaveLength(0);
+
+    currentTime = 45_000;
+    emit({ type: 'session.status', properties: { sessionID: SESSION, status: { type: 'idle' } } });
+    await settle();
+    expect(openCode.state.sent).toHaveLength(1);
+    expect(openCode.state.sent[0].path).toBe(`/session/${SESSION}/prompt_async`);
+  });
+
   it('treats an unreachable OpenCode as unknown, not idle', async () => {
     const { runtime, openCode, emit } = createRuntime({ retryDelayMs: () => 10 });
     runtime.start();

@@ -125,6 +125,7 @@ export const QueuedMessageChips = memo(({ target, hidden = false, onEditMessage,
         )
     );
     const popToInput = useMessageQueueStore((state) => state.popToInput);
+    const clearQueue = useMessageQueueStore((state) => state.clearQueue);
     const reorderQueue = useMessageQueueStore((state) => state.reorderQueue);
     const availableMaxHeight = useMobileAutocompleteMaxHeight(bodyRef, !hidden && !collapsed && queuedMessages.length > 0, 168 + 48);
 
@@ -163,12 +164,24 @@ export const QueuedMessageChips = memo(({ target, hidden = false, onEditMessage,
         onSendMessage(message.id);
     }, [onSendMessage]);
 
+    const handleForceSendFirst = React.useCallback(() => {
+        if (queuedMessages.length === 0) return;
+        onSendMessage(queuedMessages[0].id);
+    }, [queuedMessages, onSendMessage]);
+
+    const handleClearQueue = React.useCallback(() => {
+        if (!target) return;
+        clearQueue(target);
+        toast.info(t('chat.queuedMessage.toast.cleared'));
+    }, [target, clearQueue, t]);
+
     if (hidden || queuedMessages.length === 0 || !target) {
         return null;
     }
 
     return (
         <ComposerFloatingPanel role="region" ariaLabel={t('chat.queuedMessage.title')} compact={collapsed} header={
+            <div className="flex items-center justify-between gap-2 w-full min-w-0">
                 <Button
                     type="button"
                     variant="ghost"
@@ -182,6 +195,33 @@ export const QueuedMessageChips = memo(({ target, hidden = false, onEditMessage,
                     <Icon name={collapsed ? 'arrow-up-s' : 'arrow-down-s'} className="size-4 shrink-0" aria-hidden="true" />
                     <span className="min-w-0 truncate">{t('chat.queuedMessage.title')} {queuedMessages.length}</span>
                 </Button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        size="xs"
+                        onClick={handleForceSendFirst}
+                        aria-label={t('chat.queuedMessage.forceSend')}
+                        title={t('chat.queuedMessage.forceSend')}
+                        className="h-6 px-2 text-xs font-medium text-foreground hover:text-primary"
+                    >
+                        <Icon name="send-plane" className="size-3 mr-1 shrink-0" aria-hidden="true" />
+                        {t('chat.queuedMessage.forceSend')}
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        onClick={handleClearQueue}
+                        aria-label={t('chat.queuedMessage.clearQueue')}
+                        title={t('chat.queuedMessage.clearQueue')}
+                        className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
+                    >
+                        <Icon name="close" className="size-3.5 mr-1 shrink-0" aria-hidden="true" />
+                        {t('chat.queuedMessage.clearQueue')}
+                    </Button>
+                </div>
+            </div>
         }>
             {!collapsed && (
                 <DndContext

@@ -97,7 +97,7 @@ export const WorkStatusCollapsibleSection: React.FC<{
               style={iconColor ? { color: iconColor } : undefined}
             />
           ) : null)}
-          <span className={cn(HEADING_CLASS, 'min-w-0 truncate')}>{title}</span>
+          <span className={cn(HEADING_CLASS, 'shrink-0')}>{title}</span>
           <Icon
             name={expanded ? 'arrow-down-s' : 'arrow-right-s'}
             className="size-3.5 shrink-0 text-muted-foreground"
