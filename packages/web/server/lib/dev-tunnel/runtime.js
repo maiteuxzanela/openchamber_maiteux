@@ -132,19 +132,19 @@ export function createDevTunnelRuntime({
     if (!isDevTunnelPath(req.url)) return;
     void (async () => {
       try {
+        const hasOrigin = typeof req.headers?.origin === 'string' && req.headers.origin.trim() !== '';
+        if (hasOrigin && !await isRequestOriginAllowed(req)) {
+          rejectWebSocketUpgrade(socket, 403, 'Invalid origin');
+          return;
+        }
+
         if (uiAuthController?.enabled) {
           const auth = await uiAuthController.resolveAuthContext(req, null, { allowUrlToken: true });
           if (!auth) {
             rejectWebSocketUpgrade(socket, 401, 'UI authentication required');
             return;
           }
-          const hasOrigin = typeof req.headers?.origin === 'string' && req.headers.origin.trim() !== '';
-          if (hasOrigin) {
-            if (!await isRequestOriginAllowed(req)) {
-              rejectWebSocketUpgrade(socket, 403, 'Invalid origin');
-              return;
-            }
-          } else if (auth.type !== 'client') {
+          if (!hasOrigin && auth.type !== 'client') {
             rejectWebSocketUpgrade(socket, 403, 'Client authentication required');
             return;
           }

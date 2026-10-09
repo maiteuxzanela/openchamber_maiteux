@@ -400,33 +400,42 @@ export function createTerminalRuntime({
         wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit('connection', ws, req));
       } catch { rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'); }
     };
+    // Password gate. Only reachable after the origin gate below accepted the
+    // upgrade, so a cross-site WebSocket can never reach session validation.
+    const checkAuth = () => {
+      if (!uiAuthController?.enabled) { accept(); return; }
+      try {
+        const result = uiAuthController.ensureSessionToken(req, null);
+        if (!(result instanceof Promise)) {
+          if (result) accept();
+          else rejectWebSocketUpgrade(socket, 401, 'UI authentication required');
+          return;
+        }
+        void result.then((sessionToken) => {
+          if (sessionToken) accept();
+          else rejectWebSocketUpgrade(socket, 401, 'UI authentication required');
+        }).catch(() => rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'));
+      } catch { rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'); }
+    };
+    // Origin gate (anti-CSWSH): decoupled from authentication and always run
+    // FIRST, so an external/unauthorized origin is refused with 403 Forbidden
+    // even when the UI password is disabled (which previously skipped the
+    // origin check entirely and left the terminal reachable cross-site).
     const checkOrigin = () => {
       try {
         const result = isRequestOriginAllowed(req);
         if (!(result instanceof Promise)) {
-          if (result) accept();
+          if (result) checkAuth();
           else rejectWebSocketUpgrade(socket, 403, 'Invalid origin');
           return;
         }
         void result.then((allowed) => {
-          if (allowed) accept();
+          if (allowed) checkAuth();
           else rejectWebSocketUpgrade(socket, 403, 'Invalid origin');
         }).catch(() => rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'));
       } catch { rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'); }
     };
-    if (!uiAuthController?.enabled) { accept(); return; }
-    try {
-      const result = uiAuthController.ensureSessionToken(req, null);
-      if (!(result instanceof Promise)) {
-        if (result) checkOrigin();
-        else rejectWebSocketUpgrade(socket, 401, 'UI authentication required');
-        return;
-      }
-      void result.then((sessionToken) => {
-        if (sessionToken) checkOrigin();
-        else rejectWebSocketUpgrade(socket, 401, 'UI authentication required');
-      }).catch(() => rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'));
-    } catch { rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'); }
+    checkOrigin();
   };
   server.on('upgrade', upgradeHandler);
 
@@ -469,6 +478,21 @@ export function createTerminalRuntime({
     res.json({ touched });
   });
   app.post('/api/terminal/create', async (req, res) => {
+    // Anti-CSRF (blind HTML form): a cross-site form can only submit
+    // application/x-www-form-urlencoded, multipart/form-data or text/plain,
+    // and the shared urlencoded parser would happily turn it into req.body.
+    // The route is therefore JSON-only: any declared non-JSON content type is
+    // refused with 415 before a PTY is ever spawned. `req.headers` is always
+    // present on real HTTP requests (Node IncomingMessage); its absence means
+    // the route was invoked directly with an already-parsed body.
+    if (req.headers != null) {
+      const declaredType = typeof req.headers['content-type'] === 'string'
+        ? req.headers['content-type'].split(';')[0].trim().toLowerCase()
+        : '';
+      if (declaredType !== 'application/json' && !declaredType.endsWith('+json')) {
+        return res.status(415).json({ error: 'Content-Type must be application/json' });
+      }
+    }
     try {
       const session = await createSession(req.body ?? {});
       res.json({

@@ -22,6 +22,10 @@ export const createBootstrapRuntime = (dependencies) => {
       getServerPort,
       getTunnelUrl,
       verboseRequestLogs,
+      // Anti-CSRF origin policy for mutating /api requests (see
+      // registerCommonRequestMiddleware). Optional: without it the middleware
+      // falls back to a plain same-origin-by-Host comparison.
+      isMutationOriginAllowed,
       uiPassword,
       tunnelAuthController,
       remoteClientAuthRuntime,
@@ -90,7 +94,7 @@ export const createBootstrapRuntime = (dependencies) => {
       uiAuthController,
     });
 
-    registerCommonRequestMiddleware(app, { express, verboseRequestLogs });
+    registerCommonRequestMiddleware(app, { express, verboseRequestLogs, isMutationOriginAllowed });
 
     registerAgentToolRoutes(app, { express, agentToolRuntime });
 

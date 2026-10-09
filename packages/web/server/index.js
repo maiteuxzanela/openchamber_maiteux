@@ -1703,7 +1703,56 @@ async function main(options = {}) {
     'http://localhost',
     'https://localhost',
   ]);
-  const isLocalDevClientOrigin = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+  // Loopback dev origins that may read credentialed responses (CORS). The old
+  // wildcard form (`any loopback port`) handed
+  // `Access-Control-Allow-Credentials: true` to EVERY unrelated app served from
+  // this machine — any local page could read authenticated API responses. The
+  // set is now explicit: extra origins come from
+  // `options.allowedDevClientOrigins` and/or
+  // `OPENCHAMBER_ALLOWED_DEV_CLIENT_ORIGINS` (comma-separated exact origins
+  // like "http://localhost:5173" or bare ports like "5173"); with no list
+  // provided only the port THIS instance is actually bound to is trusted, so a
+  // random loopback port never gains credentialed CORS access. The active port
+  // is read lazily because `port: 0` (auto) only resolves after listen.
+  const allowedDevClientOriginEntries = [
+    ...(Array.isArray(options.allowedDevClientOrigins) ? options.allowedDevClientOrigins : []),
+    ...String(process.env.OPENCHAMBER_ALLOWED_DEV_CLIENT_ORIGINS || '').split(','),
+  ].map((entry) => String(entry).trim().toLowerCase()).filter(Boolean);
+  const listedDevClientOrigins = new Set();
+  const listedDevClientPorts = new Set();
+  for (const entry of allowedDevClientOriginEntries) {
+    if (/^\d+$/.test(entry)) { listedDevClientPorts.add(entry); continue; }
+    try { listedDevClientOrigins.add(new URL(entry).origin.toLowerCase()); } catch { /* malformed entry: ignore */ }
+  }
+  const getActiveInstancePort = () => {
+    const address = typeof server?.address === 'function' ? server.address() : null;
+    return typeof address === 'object' && address && Number.isInteger(address.port) && address.port > 0
+      ? address.port
+      : null;
+  };
+  const isLocalDevClientOrigin = (origin) => {
+    if (typeof origin !== 'string') return false;
+    const normalized = origin.trim().toLowerCase();
+    const match = /^https?:\/\/(localhost|127\.0\.0\.1):(\d+)$/.exec(normalized);
+    if (!match) return false;
+    const activePort = getActiveInstancePort();
+    if (activePort !== null && Number(match[2]) === activePort) return true;
+    return listedDevClientOrigins.has(normalized) || listedDevClientPorts.has(match[2]);
+  };
+  // Anti-CSRF origin policy for state-changing /api requests. It reuses the
+  // WebSocket origin gate (request-security: Host/x-forwarded-host/publicOrigin
+  // plus the packaged desktop/mobile WebView origins) and additionally honors
+  // the credentialed-CORS allow-list above (explicit dev-client origins), so
+  // exactly the origins trusted to read responses are also trusted to mutate.
+  // `originValue` is the Origin (or Referer-derived) origin under test; it is
+  // presented to the gate as the request Origin so the fallback policy stays
+  // identical for both headers.
+  const isMutationOriginAllowed = (req, originValue) => {
+    const origin = typeof originValue === 'string' ? originValue.trim() : '';
+    if (!origin) return true;
+    if (packagedClientOrigins.has(origin) || isLocalDevClientOrigin(origin)) return true;
+    return isRequestOriginAllowed({ ...req, headers: { ...req.headers, origin } });
+  };
   app.set('trust proxy', true);
   // Keep self-hosted instances out of search engines. The app shell is served
   // publicly (it loads before prompting for the UI password), so without this
@@ -1761,6 +1810,7 @@ async function main(options = {}) {
     runtimeName: process.env.OPENCHAMBER_RUNTIME || 'web',
     serverStartedAt,
     gracefulShutdown,
+    isMutationOriginAllowed,
     getHealthSnapshot: () => {
       const launchSpec = resolvedOpencodeBinary && !useWslForOpencode
         ? resolveManagedOpenCodeLaunchSpec(resolvedOpencodeBinary)

@@ -90,8 +90,14 @@ async function requestServerShutdown(port, hostOverride) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1500);
   try {
-    const resp = await fetch(buildLocalUrl(port, '/api/system/shutdown', hostOverride), {
+    const url = buildLocalUrl(port, '/api/system/shutdown', hostOverride);
+    const resp = await fetch(url, {
       method: 'POST',
+      // The server refuses shutdown requests whose Origin/Referer is not its
+      // own (anti-CSRF gate shared with dev-shutdown). This CLI addresses the
+      // exact URL it posts to, so declaring that origin keeps `openchamber
+      // stop` on the accepted side of the gate.
+      headers: { Origin: new URL(url).origin },
       signal: controller.signal,
     });
     return resp.ok;

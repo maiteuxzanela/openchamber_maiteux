@@ -250,6 +250,16 @@ export const registerServerStatusRoutes = (app, dependencies) => {
   app.post('/api/system/shutdown', async (req, res, next) => {
     try {
       await requireShutdownAuth(req, res, () => {
+        // Anti-CSRF lock, identical to /api/system/dev-shutdown below: this
+        // mutation may only be issued from this server's own origin. Browsers
+        // always attach Origin (or Referer) to a cross-site POST, so a forged
+        // page cannot terminate the daemon. Non-browser callers (the
+        // `openchamber stop` CLI) declare the origin they are addressing in
+        // cli-http.js `requestServerShutdown`, so they keep passing this gate.
+        if (!isSameOriginRequest(req)) {
+          res.status(403).json({ ok: false, error: 'Invalid origin' });
+          return;
+        }
         res.json({ ok: true });
         gracefulShutdown({ exitProcess: true }).catch((error) => {
           console.error('Shutdown request failed:', error?.message || error);
@@ -1074,7 +1084,67 @@ export const registerSettingsUtilityRoutes = (app, dependencies) => {
 };
 
 export const registerCommonRequestMiddleware = (app, dependencies) => {
-  const { express, verboseRequestLogs = false } = dependencies;
+  const { express, verboseRequestLogs = false, isMutationOriginAllowed } = dependencies;
+
+  // Anti-CSRF for state-changing requests: every POST/PUT/PATCH/DELETE under
+  // /api/ must come from an authorized origin when the browser declares one.
+  // A cross-site page can forge such requests with the victim's cookies, but
+  // the browser always attaches Origin (and, as fallback, Referer) to them —
+  // so an external Origin/Referer is refused here with 403 before the body is
+  // even parsed. Non-browser callers (CLI, curl, desktop/mobile shells) send
+  // neither header: there is nothing browser-supplied to verify, and the
+  // request still has to clear authentication further down the stack.
+  const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+  const originFromReferer = (rawReferer) => {
+    if (typeof rawReferer !== 'string' || !rawReferer.trim()) return null;
+    try {
+      return new URL(rawReferer.trim()).origin;
+    } catch {
+      return null;
+    }
+  };
+
+  // Fallback policy when no `isMutationOriginAllowed` is injected (standalone
+  // embeddings of this module): the candidate origin must match this request's
+  // own Host, mirroring `isSameOriginRequest` used by the shutdown routes.
+  const isSameOriginValue = (req, candidate) => {
+    try {
+      const origin = new URL(candidate);
+      const rawHost = String(req.headers?.host || '').trim().toLowerCase();
+      return Boolean(rawHost) && origin.host.toLowerCase() === rawHost;
+    } catch {
+      return false;
+    }
+  };
+
+  app.use(async (req, res, next) => {
+    try {
+      if (!MUTATING_METHODS.has(req.method)) return next();
+      const path = typeof req.path === 'string' ? req.path : String(req.url || '');
+      if (!path.startsWith('/api')) return next();
+
+      const rawOrigin = typeof req.headers?.origin === 'string' ? req.headers.origin.trim() : '';
+      const rawReferer = typeof req.headers?.referer === 'string' ? req.headers.referer.trim() : '';
+      if (!rawOrigin && !rawReferer) return next();
+
+      const candidate = rawOrigin || originFromReferer(rawReferer);
+      if (!candidate) {
+        // A present-but-unparseable Origin/Referer cannot be validated.
+        return res.status(403).json({ error: 'Invalid origin' });
+      }
+
+      const allowed = typeof isMutationOriginAllowed === 'function'
+        ? await isMutationOriginAllowed(req, candidate)
+        : isSameOriginValue(req, candidate);
+      if (!allowed) {
+        return res.status(403).json({ error: 'Invalid origin' });
+      }
+      return next();
+    } catch (error) {
+      return next(error);
+    }
+  });
 
   app.use((req, res, next) => {
     if (req.path === '/api/config/themes' || req.path.startsWith('/api/config/themes/')) {

@@ -69,6 +69,13 @@ function createHttpTestApp() {
         return;
       }
       const match = route.pattern.exec(url.pathname);
+      // Mirror express: only a declared JSON content type is parsed as JSON —
+      // the shared urlencoded parser owns every other type (the create route
+      // rejects those with 415 before touching the body).
+      const contentType = String(req.headers['content-type'] || '').toLowerCase();
+      const declaresJson = contentType === ''
+        || contentType.startsWith('application/json')
+        || contentType.includes('+json');
       const response = {
         statusCode: 200,
         headers: { 'content-type': 'application/json' },
@@ -86,9 +93,10 @@ function createHttpTestApp() {
         await route.handler({
           method: req.method,
           url: req.url,
+          headers: req.headers,
           query: Object.fromEntries(url.searchParams.entries()),
           params: route.params.reduce((acc, name, index) => ({ ...acc, [name]: match[index + 1] }), {}),
-          body: bodyText ? JSON.parse(bodyText) : {},
+          body: bodyText && declaresJson ? JSON.parse(bodyText) : {},
         }, response);
       } catch (error) {
         response.status(500).json({ error: error?.message || 'Route failed' });
@@ -1189,5 +1197,62 @@ describe('terminal runtime', () => {
       expect(harness.processes).toHaveLength(1);
       expect(harness.processes[0].killed).toBe(false);
     } finally { await harness.runtime.shutdown(); }
+  });
+
+  it('rejects non-JSON content types on create (blind HTML form CSRF)', async () => {
+    const harness = createHarness();
+    try {
+      const create = harness.routes.post.get('/api/terminal/create');
+
+      const formResponse = createResponse();
+      await create({
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: { sessionId: 'form-csrf', cwd: '/repo' },
+      }, formResponse);
+      expect(formResponse.statusCode).toBe(415);
+      expect(formResponse.body).toEqual({ error: 'Content-Type must be application/json' });
+      expect(harness.processes).toHaveLength(0);
+
+      const missingType = createResponse();
+      await create({ headers: {}, body: { sessionId: 'no-type', cwd: '/repo' } }, missingType);
+      expect(missingType.statusCode).toBe(415);
+      expect(harness.processes).toHaveLength(0);
+
+      const jsonResponse = createResponse();
+      await create({
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+        body: { sessionId: 'json-ok', cwd: '/repo' },
+      }, jsonResponse);
+      expect(jsonResponse.statusCode).toBe(200);
+      expect(harness.processes).toHaveLength(1);
+    } finally { await harness.runtime.shutdown(); }
+  });
+
+  it('refuses a cross-site form POST to /api/terminal/create over HTTP', async () => {
+    const app = createHttpTestApp();
+    const server = http.createServer(app);
+    const runtime = createRuntime(server, {
+      app,
+      terminalTerminationGraceMs: 10,
+      fs: { promises: { stat: async () => ({ isDirectory: () => true }) } },
+      searchPathFor: () => '/bin/sh',
+      isExecutable: () => true,
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+
+    try {
+      const rejected = await fetch(`${base}/api/terminal/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'sessionId=form-csrf&cwd=/repo',
+      });
+      expect(rejected.status).toBe(415);
+      expect(await rejected.json()).toEqual({ error: 'Content-Type must be application/json' });
+    } finally {
+      await runtime.shutdown();
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

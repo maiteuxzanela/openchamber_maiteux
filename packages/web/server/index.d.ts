@@ -34,6 +34,13 @@ export interface StartWebUiServerOptions {
   desktopUpdater?: DesktopUpdater;
   /** App-owned built-in resources outside Electron's ASAR archive. */
   builtInExtensionsDir?: string;
+  /**
+   * Extra loopback dev origins allowed to read credentialed CORS responses.
+   * Entries are exact origins ("http://localhost:5173") or bare ports ("5173").
+   * When omitted (and OPENCHAMBER_ALLOWED_DEV_CLIENT_ORIGINS is unset), only
+   * the port this instance is bound to is trusted.
+   */
+  allowedDevClientOrigins?: string[];
 }
 
 export declare function startWebUiServer(

@@ -3,6 +3,14 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import { getRunDir } from './cli-paths.js';
 
+// Single source of truth for how long the CLI waits for a server that was
+// asked to shut down, before escalating to terminateProcessTree (SIGTERM →
+// SIGKILL). Aligned with SHUTDOWN_GRACE_MS (20s) in
+// server/lib/terminal/shutdown.js: the daemon drains every PTY for up to 20s
+// during graceful shutdown, so waiting any shorter (5s) meant SIGKILL landed
+// mid-drain and orphaned terminal processes.
+const SHUTDOWN_WAIT_MS = 25_000;
+
 async function getPidFilePath(port) {
   return path.join(getRunDir(), `openchamber-${port}.pid`);
 }
@@ -261,9 +269,11 @@ async function stopInstanceProcess(pid, options = {}) {
     return true;
   }
 
+  // Default = SHUTDOWN_WAIT_MS: the daemon must be allowed to drain its PTYs
+  // (20s) before terminateProcessTree is allowed to escalate.
   const shutdownWaitMs = Number.isFinite(options.shutdownWaitMs) && options.shutdownWaitMs >= 0
     ? Math.trunc(options.shutdownWaitMs)
-    : 5000;
+    : SHUTDOWN_WAIT_MS;
 
   if (await waitForProcessExit(pid, shutdownWaitMs)) {
     return true;
@@ -274,6 +284,7 @@ async function stopInstanceProcess(pid, options = {}) {
 
 
 export {
+  SHUTDOWN_WAIT_MS,
   getPidFilePath,
   getInstanceFilePath,
   readPidFile,

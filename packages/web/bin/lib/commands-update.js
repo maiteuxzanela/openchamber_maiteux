@@ -4,6 +4,7 @@ import {
   readInstanceOptions,
   removePidFile,
   stopInstanceProcess,
+  SHUTDOWN_WAIT_MS,
 } from './cli-process.js';
 import {
   intro as clackIntro,
@@ -81,7 +82,7 @@ function createUpdateCommand({ importFromFilePath, packageManagerPath, serveComm
         try {
           const requested = await requestServerShutdown(instance.port, instance.host);
           await stopInstanceProcess(instance.pid, {
-            shutdownWaitMs: requested ? 5000 : 0,
+            shutdownWaitMs: requested ? SHUTDOWN_WAIT_MS : 0,
             gracefulTimeoutMs: 2500,
             forceTimeoutMs: 3000,
           });

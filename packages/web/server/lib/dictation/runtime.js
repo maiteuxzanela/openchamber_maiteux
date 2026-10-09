@@ -234,16 +234,16 @@ export function createDictationRuntime({
 
     const handleUpgrade = async () => {
       try {
+        const originAllowed = await isRequestOriginAllowed(req);
+        if (!originAllowed) {
+          rejectWebSocketUpgrade(socket, 403, 'Invalid origin');
+          return;
+        }
+
         if (uiAuthController?.enabled) {
           const sessionToken = await uiAuthController?.ensureSessionToken?.(req, null);
           if (!sessionToken) {
             rejectWebSocketUpgrade(socket, 401, 'UI authentication required');
-            return;
-          }
-
-          const originAllowed = await isRequestOriginAllowed(req);
-          if (!originAllowed) {
-            rejectWebSocketUpgrade(socket, 403, 'Invalid origin');
             return;
           }
         }

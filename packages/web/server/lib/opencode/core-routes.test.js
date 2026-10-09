@@ -24,7 +24,12 @@ describe('core-routes', () => {
 
     registerServerStatusRoutes(app, dependencies);
 
-    await request(app).post('/api/system/shutdown');
+    // Same-origin lock: the caller declares the origin it is addressing, the
+    // way `openchamber stop` does (cli-http.js requestServerShutdown).
+    await request(app)
+      .post('/api/system/shutdown')
+      .set('Host', '127.0.0.1')
+      .set('Origin', 'http://127.0.0.1');
 
     expect(dependencies.gracefulShutdown).toHaveBeenCalled();
     expect(shutdownOpts).toEqual({ exitProcess: true });
@@ -78,6 +83,8 @@ describe('core-routes', () => {
 
     await request(app)
       .post('/api/system/shutdown')
+      .set('Host', '127.0.0.1')
+      .set('Origin', 'http://127.0.0.1')
       .expect(200, { ok: true });
 
     expect(dependencies.uiAuthController.requireAuth).toHaveBeenCalledTimes(1);
@@ -110,6 +117,95 @@ describe('core-routes', () => {
     expect(dependencies.tunnelAuthController.requireTunnelSession).toHaveBeenCalledTimes(1);
     expect(dependencies.uiAuthController.requireAuth).not.toHaveBeenCalled();
     expect(dependencies.gracefulShutdown).not.toHaveBeenCalled();
+  });
+
+  it('rejects /api/system/shutdown from a foreign origin (anti-CSRF)', async () => {
+    const app = express();
+    const dependencies = {
+      gracefulShutdown: vi.fn(async () => {}),
+      getHealthSnapshot: () => ({ status: 'ok' }),
+      openchamberVersion: '1.0.0',
+      runtimeName: 'test',
+      express,
+      tunnelAuthController: {
+        classifyRequestScope: () => 'local',
+        requireTunnelSession: vi.fn(),
+      },
+      uiAuthController: {
+        requireAuth: vi.fn((_req, _res, next) => next()),
+      },
+    };
+
+    registerServerStatusRoutes(app, dependencies);
+
+    await request(app)
+      .post('/api/system/shutdown')
+      .set('Origin', 'https://evil.example.com')
+      .expect(403, { ok: false, error: 'Invalid origin' });
+
+    // A forged Referer with no Origin is refused as well.
+    await request(app)
+      .post('/api/system/shutdown')
+      .set('Referer', 'https://evil.example.com/attack.html')
+      .expect(403, { ok: false, error: 'Invalid origin' });
+
+    // Origin-locked like dev-shutdown: declaring nothing is refused too.
+    await request(app)
+      .post('/api/system/shutdown')
+      .expect(403, { ok: false, error: 'Invalid origin' });
+
+    expect(dependencies.gracefulShutdown).not.toHaveBeenCalled();
+    expect(dependencies.uiAuthController.requireAuth).toHaveBeenCalledTimes(3);
+  });
+
+  it('blocks cross-origin mutations under /api and keeps same-origin callers working', async () => {
+    const app = express();
+    registerCommonRequestMiddleware(app, { express });
+    app.post('/api/csrf-probe', (_req, res) => res.json({ ok: true }));
+    app.put('/api/csrf-probe', (_req, res) => res.json({ ok: true }));
+    app.delete('/api/csrf-probe', (_req, res) => res.json({ ok: true }));
+    app.patch('/api/csrf-probe', (_req, res) => res.json({ ok: true }));
+    app.get('/api/csrf-probe', (_req, res) => res.json({ ok: true }));
+    app.post('/outside-probe', (_req, res) => res.json({ ok: true }));
+
+    for (const method of ['post', 'put', 'delete', 'patch']) {
+      await request(app)[method]('/api/csrf-probe')
+        .set('Origin', 'https://evil.example.com')
+        .expect(403, { error: 'Invalid origin' });
+    }
+
+    // Referer fallback for clients that omit Origin.
+    await request(app)
+      .post('/api/csrf-probe')
+      .set('Referer', 'https://evil.example.com/attack.html')
+      .expect(403, { error: 'Invalid origin' });
+
+    // Same-origin declaration passes.
+    await request(app)
+      .post('/api/csrf-probe')
+      .set('Host', '127.0.0.1')
+      .set('Origin', 'http://127.0.0.1')
+      .expect(200, { ok: true });
+
+    // Non-browser callers (CLI, curl) send neither header: still allowed here,
+    // they are gated by authentication further down the stack.
+    await request(app).post('/api/csrf-probe').expect(200, { ok: true });
+
+    // Safe methods and non-/api paths are not gated.
+    await request(app).get('/api/csrf-probe').set('Origin', 'https://evil.example.com').expect(200, { ok: true });
+    await request(app).post('/outside-probe').set('Origin', 'https://evil.example.com').expect(200, { ok: true });
+  });
+
+  it('honors the injected mutation origin policy for packaged and dev client origins', async () => {
+    const app = express();
+    registerCommonRequestMiddleware(app, {
+      express,
+      isMutationOriginAllowed: (_req, origin) => origin === 'capacitor://localhost',
+    });
+    app.post('/api/csrf-injected', (_req, res) => res.json({ ok: true }));
+
+    await request(app).post('/api/csrf-injected').set('Origin', 'capacitor://localhost').expect(200, { ok: true });
+    await request(app).post('/api/csrf-injected').set('Origin', 'https://evil.example.com').expect(403, { error: 'Invalid origin' });
   });
 
   it('should parse JSON bodies for snippet config routes', async () => {

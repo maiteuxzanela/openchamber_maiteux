@@ -117,6 +117,7 @@ OPENCODE_HOST=https://myhost:4096 OPENCODE_SKIP_START=true openchamber
 | `OPENCHAMBER_COMPRESS_API` | Set to `true` to force `/api/*` compression, or `false` to disable it. Desktop runtime disables API compression by default to reduce local sidecar CPU use |
 | `OPENCHAMBER_FS_UPLOAD_MAX_BYTES` | Maximum file upload size in bytes (default: 100 MiB) |
 | `OPENCHAMBER_TERMINAL_SHELL` | Preferred terminal shell executable used by the `Auto` setting before platform defaults |
+| `OPENCHAMBER_ALLOWED_DEV_CLIENT_ORIGINS` | Comma-separated extra loopback origins (e.g. `http://localhost:5173` or bare ports) allowed to read credentialed CORS responses. Unset by default: only the port this instance is bound to is trusted |
 
 </details>
 

@@ -141,16 +141,19 @@ export function createMessageStreamWsRuntime({
 
     const handleUpgrade = async () => {
       try {
+        // Origin gate (anti-CSWSH): runs unconditionally — outside the UI
+        // password gate — so an invalid/unauthorized origin is refused with
+        // 403 Forbidden even when uiPassword is disabled.
+        const originAllowed = await isRequestOriginAllowed(req);
+        if (!originAllowed) {
+          rejectWebSocketUpgrade(socket, 403, 'Invalid origin');
+          return;
+        }
+
         if (uiAuthController?.enabled) {
           const sessionToken = await uiAuthController?.ensureSessionToken?.(req, null);
           if (!sessionToken) {
             rejectWebSocketUpgrade(socket, 401, 'UI authentication required');
-            return;
-          }
-
-          const originAllowed = await isRequestOriginAllowed(req);
-          if (!originAllowed) {
-            rejectWebSocketUpgrade(socket, 403, 'Invalid origin');
             return;
           }
         }
