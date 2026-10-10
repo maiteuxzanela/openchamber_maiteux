@@ -63,9 +63,13 @@ import { useI18n } from '@/lib/i18n';
 import { applyMobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import {
   EMBEDDED_VISIBILITY_UPDATE,
+  getEmbeddedSessionChatURLIdentity,
   isEmbeddedSessionChat,
   requestEmbeddedSessionVisibility,
+  startEmbeddedSessionVisibilityRetry,
 } from '@/components/layout/contextPanelEmbeddedChat';
+import { normalizePath } from '@/lib/pathNormalization';
+import { Skeleton } from '@/components/ui/skeleton';
 import { SyncAppEffects } from '@/apps/AppEffects';
 import { resetAppForRuntimeEndpointChange } from '@/apps/runtimeEndpointReset';
 import { useAppFontEffects } from '@/apps/useAppFontEffects';
@@ -126,7 +130,11 @@ type EmbeddedVisibilityPayload = {
 
 const normalizeEmbeddedDirectory = (value: string | null | undefined): string => {
   if (!value) return '';
-  return value.replace(/\\/g, '/').replace(/\/+$/g, '');
+  // Same normalization the directory store applies inside setDirectory, so the
+  // URL directory and the store directory can actually converge (backslashes,
+  // trailing slashes, Windows drive-letter case). Comparing across the two
+  // spellings is what used to leave the embedded panel permanently blank.
+  return normalizePath(value) ?? '';
 };
 
 const readEmbeddedSessionChatConfig = (): EmbeddedSessionChatConfig | null => {
@@ -134,22 +142,21 @@ const readEmbeddedSessionChatConfig = (): EmbeddedSessionChatConfig | null => {
     return null;
   }
 
-  const params = new URLSearchParams(window.location.search);
-  const sessionIdRaw = params.get('sessionId');
-  const sessionId = typeof sessionIdRaw === 'string' ? sessionIdRaw.trim() : '';
-  if (!sessionId) {
+  // The URL is the iframe's own identity: sessionId + directory are what the
+  // direct-API path needs to fetch the transcript when the parent handshake
+  // never answers, so they are read through the shared helper instead of a
+  // second, divergent parse.
+  const identity = getEmbeddedSessionChatURLIdentity();
+  if (!identity) {
     return null;
   }
 
-  const directoryRaw = params.get('directory');
-  const directory = typeof directoryRaw === 'string' && directoryRaw.trim().length > 0
-    ? directoryRaw.trim()
-    : null;
+  const params = new URLSearchParams(window.location.search);
 
   return {
-    sessionId,
-    directory,
-    readOnly: params.get('readOnly') === '1' || params.get('readOnly') === 'true',
+    sessionId: identity.sessionId,
+    directory: identity.directory,
+    readOnly: identity.readOnly,
     allowPromptingSubagentSessions: params.has('allowPromptingSubagentSessions')
       ? params.get('allowPromptingSubagentSessions') === '1'
       : undefined,
@@ -162,6 +169,53 @@ const isMcpOAuthCallbackPath = (): boolean => {
   }
 
   return window.location.pathname === MCP_OAUTH_CALLBACK_PATH;
+};
+
+/**
+ * How long the embedded panel keeps showing the directory-sync skeleton before
+ * it stops waiting for the store to converge. The panel was opened for one
+ * specific directory, so the URL wins — but if the store never gets there
+ * (worktree churn, a slow runtime switch) the frame degrades to rendering the
+ * session anyway instead of staying blank forever.
+ */
+const EMBEDDED_DIRECTORY_SYNC_TIMEOUT_MS = 3_500;
+const EMBEDDED_DIRECTORY_SYNC_RETRY_MS = 400;
+const EMBEDDED_DIRECTORY_SYNC_MAX_ATTEMPTS = 6;
+
+/**
+ * Shown while the URL directory is being forced into the directory store.
+ * A skeleton is deliberately used instead of `null`: an embedded frame that
+ * renders nothing looks broken to the subagent's operator and gives no signal
+ * that anything is happening.
+ */
+const EmbeddedDirectorySyncSkeleton: React.FC<{ directory: string }> = ({ directory }) => {
+  const { t } = useI18n();
+
+  return (
+    <div
+      className="flex h-full w-full flex-col gap-4 bg-background p-4"
+      role="status"
+      aria-busy="true"
+      aria-live="polite"
+      data-embedded-directory-sync="pending"
+      data-embedded-directory={directory}
+    >
+      <span className="sr-only">{t('common.loading')}</span>
+      <div className="flex items-center gap-3">
+        <Skeleton className="h-8 w-8 rounded-full" />
+        <Skeleton className="h-4 w-36" />
+      </div>
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-16 w-2/3 rounded-2xl" />
+        <Skeleton className="h-20 w-3/4 self-end rounded-2xl" />
+        <Skeleton className="h-12 w-1/2 rounded-2xl" />
+      </div>
+      <div className="mt-auto flex items-center gap-2">
+        <Skeleton className="h-9 flex-1 rounded-lg" />
+        <Skeleton className="h-9 w-9 rounded-lg" />
+      </div>
+    </div>
+  );
 };
 
 const EmbeddedSessionChatContent: React.FC<{
@@ -177,10 +231,54 @@ const EmbeddedSessionChatContent: React.FC<{
 
   const expectedDirectory = normalizeEmbeddedDirectory(embeddedSessionChat.directory);
   const activeDirectory = normalizeEmbeddedDirectory(currentDirectory);
+  // In embedded mode the URL directory is sovereign: the panel was opened for
+  // exactly one directory (a worktree, a project), so a store that still
+  // points elsewhere must be corrected — never blank the screen over it.
+  const isDirectoryOutOfSync = expectedDirectory.length > 0 && activeDirectory !== expectedDirectory;
+  const [directorySyncTimedOut, setDirectorySyncTimedOut] = React.useState(false);
+  const isWaitingForDirectorySync = isDirectoryOutOfSync && !directorySyncTimedOut;
+
+  // Force the store to the URL directory, retrying a bounded number of times
+  // so a transient race (store still bootstrapping, worktree path swapping)
+  // cannot strand the panel in the skeleton.
+  React.useEffect(() => {
+    if (isVSCodeRuntime) return;
+    if (!expectedDirectory || activeDirectory === expectedDirectory) return;
+
+    let attempts = 0;
+    const syncDirectory = (): boolean => {
+      const store = useDirectoryStore.getState();
+      if (normalizeEmbeddedDirectory(store.currentDirectory) === expectedDirectory) {
+        return true;
+      }
+      attempts += 1;
+      store.setDirectory(expectedDirectory);
+      return false;
+    };
+
+    if (syncDirectory()) return;
+
+    const interval = window.setInterval(() => {
+      if (syncDirectory() || attempts >= EMBEDDED_DIRECTORY_SYNC_MAX_ATTEMPTS) {
+        window.clearInterval(interval);
+      }
+    }, EMBEDDED_DIRECTORY_SYNC_RETRY_MS);
+
+    return () => window.clearInterval(interval);
+  }, [activeDirectory, expectedDirectory, isVSCodeRuntime]);
+
+  // Never wait forever: after the timeout the chat renders with whatever
+  // directory the store settled on (the bootstrap below then proceeds too).
+  React.useEffect(() => {
+    if (!isDirectoryOutOfSync || directorySyncTimedOut || isVSCodeRuntime) return;
+
+    const timer = window.setTimeout(() => setDirectorySyncTimedOut(true), EMBEDDED_DIRECTORY_SYNC_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [directorySyncTimedOut, isDirectoryOutOfSync, isVSCodeRuntime]);
 
   React.useEffect(() => {
     if (isVSCodeRuntime) return;
-    if (expectedDirectory && activeDirectory !== expectedDirectory) return;
+    if (isDirectoryOutOfSync && !directorySyncTimedOut) return;
 
     const bootstrapKey = `${expectedDirectory}\n${embeddedSessionChat.sessionId}`;
     // Skip if this session was already bootstrapped and a session is still
@@ -198,16 +296,23 @@ const EmbeddedSessionChatContent: React.FC<{
   }, [
     activeDirectory,
     currentSessionId,
+    directorySyncTimedOut,
     embeddedSessionChat.directory,
     embeddedSessionChat.sessionId,
     expectedDirectory,
+    isDirectoryOutOfSync,
     isVSCodeRuntime,
     setCurrentSession,
     sync,
   ]);
 
-  if (expectedDirectory && activeDirectory !== expectedDirectory) {
-    return null;
+  if (isWaitingForDirectorySync) {
+    return (
+      <>
+        <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
+        <EmbeddedDirectorySyncSkeleton directory={expectedDirectory} />
+      </>
+    );
   }
 
   return (
@@ -562,7 +667,10 @@ function App({ apis }: AppProps) {
       return;
     }
 
+    let visibilityAcknowledged = false;
+
     const applyVisibility = (payload?: EmbeddedVisibilityPayload) => {
+      visibilityAcknowledged = true;
       setIsEmbeddedVisible(payload?.visible === true);
     };
 
@@ -586,8 +694,18 @@ function App({ apis }: AppProps) {
     scopedWindow.__openchamberSetEmbeddedVisibility = applyVisibility;
     window.addEventListener('message', handleMessage);
     requestEmbeddedSessionVisibility();
+    // The parent installs its listener after this frame can already have
+    // posted its first request, so keep asking until it answers. A parent that
+    // never answers is a lost handshake, not a hidden panel: fall back to the
+    // direct-API path (URL sessionId/directory) with background work enabled
+    // instead of leaving the subagent frozen.
+    const stopVisibilityRetry = startEmbeddedSessionVisibilityRetry({
+      isAcknowledged: () => visibilityAcknowledged,
+      onGiveUp: () => applyVisibility({ visible: true }),
+    });
 
     return () => {
+      stopVisibilityRetry();
       window.removeEventListener('message', handleMessage);
       if (scopedWindow.__openchamberSetEmbeddedVisibility === applyVisibility) {
         delete scopedWindow.__openchamberSetEmbeddedVisibility;
@@ -600,7 +718,11 @@ function App({ apis }: AppProps) {
       return;
     }
 
-    if (currentDirectory === embeddedSessionChat.directory) {
+    // Compare normalized spellings: the store stores the resolved path, while
+    // the URL keeps whatever it was built with (trailing slash, backslashes,
+    // lower-case drive letter). A raw comparison would keep re-issuing the
+    // same switch forever on those pairs.
+    if (normalizeEmbeddedDirectory(currentDirectory) === normalizeEmbeddedDirectory(embeddedSessionChat.directory)) {
       return;
     }
 

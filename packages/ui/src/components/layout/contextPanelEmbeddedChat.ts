@@ -32,6 +32,15 @@ export const EMBEDDED_VISIBILITY_REQUEST = 'openchamber:embedded-visibility-requ
 export const EMBEDDED_VISIBILITY_UPDATE = 'openchamber:embedded-visibility';
 const EMBEDDED_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 5_000;
 const EMBEDDED_RUNTIME_BOOTSTRAP_RETRY_MS = 100;
+/**
+ * The visibility handshake is a fire-and-forget postMessage, so a parent that
+ * installs its listener a few milliseconds after the iframe has already asked
+ * (or a browser that drops the first message) would otherwise leave the frame
+ * invisible for its whole life. The child keeps asking on this cadence until
+ * the parent answers, for at most {@link EMBEDDED_VISIBILITY_RETRY_WINDOW_MS}.
+ */
+export const EMBEDDED_VISIBILITY_RETRY_MS = 750;
+export const EMBEDDED_VISIBILITY_RETRY_WINDOW_MS = 6_000;
 
 const isStringRecord = (value: unknown): value is Record<string, string> => (
   value !== null
@@ -94,7 +103,16 @@ export const requestEmbeddedSessionRuntimeBootstrap = (): Promise<EmbeddedSessio
       if (event.origin !== window.location.origin || event.source !== window.parent) return;
       const data = event.data as { type?: unknown; requestId?: unknown; payload?: unknown };
       if (data?.type !== EMBEDDED_RUNTIME_BOOTSTRAP_RESPONSE || data.requestId !== requestId) return;
-      finish(isRuntimeBootstrap(data.payload) ? data.payload : null);
+      const payload = isRuntimeBootstrap(data.payload) ? data.payload : null;
+      if (!payload) {
+        // A parent answering before its runtime config is ready must not
+        // terminate the handshake: ask again and keep the retry loop alive
+        // until it sends a payload this frame can actually use (or the
+        // timeout falls back to the URL-derived direct-API context).
+        sendRequest();
+        return;
+      }
+      finish(payload);
     };
     timeout = window.setTimeout(() => finish(null), EMBEDDED_RUNTIME_BOOTSTRAP_TIMEOUT_MS);
     const sendRequest = () => {
@@ -111,6 +129,104 @@ export const requestEmbeddedSessionVisibility = (): void => {
     return;
   }
   window.parent.postMessage({ type: EMBEDDED_VISIBILITY_REQUEST }, window.location.origin);
+};
+
+export type EmbeddedSessionVisibilityRetryOptions = {
+  /** Stops the retries as soon as the parent has answered at least once. */
+  isAcknowledged: () => boolean;
+  /** Called exactly once when the retry window closes with no answer at all. */
+  onGiveUp?: () => void;
+};
+
+/**
+ * Keeps re-asking the parent for the authoritative visibility signal until it
+ * answers (or the retry window closes). The first request is sent by the
+ * caller so the handshake starts in the same tick the listener is installed;
+ * this helper only covers the "parent was not listening yet" race.
+ *
+ * Returns a disposer that must run on unmount so a hidden panel cannot keep
+ * re-posting into a torn-down parent.
+ */
+export const startEmbeddedSessionVisibilityRetry = (
+  options: EmbeddedSessionVisibilityRetryOptions,
+): (() => void) => {
+  if (
+    typeof window === 'undefined'
+    || typeof window.setInterval !== 'function'
+    || typeof window.clearInterval !== 'function'
+    || !isEmbeddedSessionChat()
+  ) {
+    return () => undefined;
+  }
+
+  const startedAt = Date.now();
+  let stopped = false;
+  let interval = 0;
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    window.clearInterval(interval);
+  };
+
+  interval = window.setInterval(() => {
+    if (stopped) return;
+    if (options.isAcknowledged()) {
+      stop();
+      return;
+    }
+    if (Date.now() - startedAt >= EMBEDDED_VISIBILITY_RETRY_WINDOW_MS) {
+      stop();
+      options.onGiveUp?.();
+      return;
+    }
+    requestEmbeddedSessionVisibility();
+  }, EMBEDDED_VISIBILITY_RETRY_MS);
+
+  return stop;
+};
+
+/**
+ * Identity the embedded iframe carries in its own URL (`sessionId`,
+ * `directory`, `readOnly`).
+ *
+ * This is the direct-API fallback for a lost handshake: the parent is the
+ * normal source of truth for runtime bootstrap and visibility, but every
+ * message the frame needs is reachable through the API with nothing more than
+ * the identity above, so a parent that never answers cannot leave the panel
+ * blank.
+ */
+export type EmbeddedSessionChatURLIdentity = {
+  sessionId: string;
+  directory: string | null;
+  readOnly: boolean;
+};
+
+export const getEmbeddedSessionChatURLIdentity = (): EmbeddedSessionChatURLIdentity | null => {
+  if (!isEmbeddedSessionChat() || typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = (params.get('sessionId') ?? '').trim();
+    if (!sessionId) {
+      return null;
+    }
+
+    const directoryRaw = params.get('directory');
+    const directory = typeof directoryRaw === 'string' && directoryRaw.trim().length > 0
+      ? directoryRaw.trim()
+      : null;
+
+    return {
+      sessionId,
+      directory,
+      readOnly: params.get('readOnly') === '1' || params.get('readOnly') === 'true',
+    };
+  } catch {
+    return null;
+  }
 };
 
 const buildEmbeddedSessionChatURLSignature = (

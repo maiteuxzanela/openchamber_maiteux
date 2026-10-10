@@ -914,6 +914,26 @@ export const ContextPanel: React.FC = () => {
     }
   }, [postEmbeddedVisibilityToChat]);
 
+  // The child installs its message listener only after its document parses, so
+  // a visibility post emitted while the iframe is still mounting (or during
+  // load) can land in a window that is not listening yet. Re-push a few times
+  // after the active frame changes; the child retries its own request too, so
+  // only one side of the handshake has to land for the panel to wake up.
+  React.useEffect(() => {
+    if (!activeChatTabID || typeof window === 'undefined') {
+      return;
+    }
+
+    const timers = [300, 1_200, 3_000].map((delayMs) => window.setTimeout(() => {
+      const frame = chatFrameRefs.current.get(activeChatTabID);
+      if (frame) {
+        postEmbeddedVisibilityToChat(activeChatTabID, frame, window.location.origin);
+      }
+    }, delayMs));
+
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [activeChatTabID, postEmbeddedVisibilityToChat]);
+
   React.useEffect(() => {
     if (typeof window === 'undefined') {
       return;
@@ -1298,7 +1318,10 @@ export const ContextPanel: React.FC = () => {
         aria-hidden={!isOpen}
       >
       {header}
-      <div className={cn('relative min-h-0 flex-1 overflow-hidden', isResizing && 'pointer-events-none')}>
+      {/* min-w-0/w-full keep the chat frame anchored to the panel box while
+          the width animates: without them an embedded document's intrinsic
+          width can stretch this container past the responsive panel width. */}
+      <div className={cn('relative min-h-0 min-w-0 w-full flex-1 overflow-hidden', isResizing && 'pointer-events-none')}>
         {hasFileTabs ? (
           <div className={cn('absolute inset-0 flex', isFileTabActive ? 'flex' : 'hidden')}>
             {hasOpenEditorFile || !contextEditorTreeVisible ? (
@@ -1327,10 +1350,17 @@ export const ContextPanel: React.FC = () => {
                 return;
               }
               chatFrameRefs.current.set(activeChatTab.id, node);
+              // Push visibility the moment the frame exists instead of waiting
+              // for load: a frame that registers late still has to learn
+              // whether it is the active tab, and the delayed re-posts below
+              // cover the child's listener not being installed yet.
+              if (typeof window !== 'undefined') {
+                postEmbeddedVisibilityToChat(activeChatTab.id, node, window.location.origin);
+              }
             }}
             src={activeChatSrc}
             title={t('contextPanel.iframe.sessionChatTitle', { sessionID: activeChatSessionID })}
-            className="absolute inset-0 h-full w-full border-0 bg-background"
+            className="absolute inset-0 block h-full w-full border-0 bg-background"
             onLoad={() => {
               postThemeSyncToEmbeddedChat();
               postChatSettingsSyncToEmbeddedChat();
