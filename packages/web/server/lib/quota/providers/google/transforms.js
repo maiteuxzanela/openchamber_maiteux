@@ -6,6 +6,7 @@
  */
 
 import {
+  asObject,
   asNonEmptyString,
   toNumber,
   toTimestamp,
@@ -14,6 +15,7 @@ import {
 
 const GOOGLE_FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60;
 const GOOGLE_DAILY_WINDOW_SECONDS = 24 * 60 * 60;
+const GOOGLE_WEEKLY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 
 export const parseGoogleRefreshToken = (rawRefreshToken) => {
   const refreshToken = asNonEmptyString(rawRefreshToken);
@@ -106,4 +108,136 @@ export const transformModelData = (modelName, modelData, sourceId) => {
       }
     }
   };
+};
+
+/**
+ * Transforms cachedQuota entries for a model family (e.g. 'gemini' or 'non-gemini')
+ * into standard toUsageWindow objects.
+ *
+ * @param {unknown} familyQuota
+ * @returns {Record<string, object>}
+ */
+export const transformCachedQuotaWindows = (familyQuota) => {
+  const quota = asObject(familyQuota);
+  if (!quota) return {};
+
+  const windows = {};
+  const entries = Array.isArray(quota.windows) ? quota.windows : [];
+
+  for (const item of entries) {
+    const rawKey = asNonEmptyString(item?.window);
+    if (!rawKey) continue;
+
+    const remainingFraction = toNumber(item?.remainingFraction);
+    const remainingPercent = remainingFraction !== null
+      ? Math.round(remainingFraction * 100)
+      : null;
+    const usedPercent = remainingPercent !== null ? Math.max(0, 100 - remainingPercent) : null;
+    const resetAt = toTimestamp(item?.resetTime);
+
+    let windowSeconds = null;
+    const windowKey = rawKey === '7d' ? 'weekly' : rawKey;
+    if (windowKey === '5h') {
+      windowSeconds = GOOGLE_FIVE_HOUR_WINDOW_SECONDS;
+    } else if (windowKey === 'weekly') {
+      windowSeconds = GOOGLE_WEEKLY_WINDOW_SECONDS;
+    } else if (windowKey === 'daily') {
+      windowSeconds = GOOGLE_DAILY_WINDOW_SECONDS;
+    }
+
+    windows[windowKey] = toUsageWindow({
+      usedPercent,
+      windowSeconds,
+      resetAt
+    });
+  }
+
+  // Fallback if windows array is absent but top-level remainingFraction exists
+  if (Object.keys(windows).length === 0 && quota.remainingFraction !== undefined) {
+    const remainingFraction = toNumber(quota.remainingFraction);
+    const remainingPercent = remainingFraction !== null
+      ? Math.round(remainingFraction * 100)
+      : null;
+    const usedPercent = remainingPercent !== null ? Math.max(0, 100 - remainingPercent) : null;
+    const resetAt = toTimestamp(quota.resetTime);
+    windows.weekly = toUsageWindow({
+      usedPercent,
+      windowSeconds: GOOGLE_WEEKLY_WINDOW_SECONDS,
+      resetAt
+    });
+  }
+
+  return windows;
+};
+
+/**
+ * Transforms full cachedQuota root object (containing families like 'gemini' and 'non-gemini')
+ * into a map of family -> windows.
+ *
+ * @param {unknown} cachedQuota
+ * @returns {Record<string, Record<string, object>>}
+ */
+export const transformCachedQuota = (cachedQuota) => {
+  const root = asObject(cachedQuota);
+  if (!root) return {};
+
+  const result = {};
+  for (const [familyKey, familyData] of Object.entries(root)) {
+    const familyObj = asObject(familyData);
+    if (!familyObj) continue;
+    const windows = transformCachedQuotaWindows(familyObj);
+    if (Object.keys(windows).length > 0) {
+      result[familyKey] = windows;
+    }
+  }
+  return result;
+};
+
+/**
+ * Extracts provider-level windows ('5h' and 'weekly') from Antigravity cachedQuota.
+ * Specifically looks for cachedQuota.gemini (or root if formatted directly).
+ *
+ * @param {unknown} cachedQuota
+ * @returns {Record<string, object>}
+ */
+export const transformAntigravityProviderWindows = (cachedQuota) => {
+  const root = asObject(cachedQuota);
+  if (!root) return {};
+  const geminiQuota = asObject(root.gemini) ?? root;
+  return transformCachedQuotaWindows(geminiQuota);
+};
+
+/**
+ * Augments model records with weekly (and missing 5h) windows from cachedQuota.
+ * Gemini models map to cachedQuota.gemini; Claude/GPT/other non-gemini models map to cachedQuota['non-gemini'].
+ *
+ * @param {Record<string, object>} models
+ * @param {unknown} cachedQuota
+ * @returns {Record<string, object>}
+ */
+export const applyCachedQuotaToModels = (models, cachedQuota) => {
+  const root = asObject(cachedQuota);
+  if (!models || typeof models !== 'object' || !root) {
+    return models;
+  }
+
+  const geminiWindows = transformCachedQuotaWindows(root.gemini);
+  const nonGeminiWindows = transformCachedQuotaWindows(root['non-gemini']);
+
+  for (const [modelName, modelEntry] of Object.entries(models)) {
+    if (!modelEntry || typeof modelEntry !== 'object') continue;
+    if (!modelEntry.windows) modelEntry.windows = {};
+
+    const isNonGemini = modelName.includes('claude') || modelName.includes('gpt') || modelName.includes('chat_');
+    const sourceWindows = isNonGemini ? nonGeminiWindows : geminiWindows;
+
+    if (sourceWindows?.weekly && !modelEntry.windows.weekly) {
+      modelEntry.windows.weekly = sourceWindows.weekly;
+    }
+    if (sourceWindows?.['5h'] && !modelEntry.windows['5h']) {
+      modelEntry.windows['5h'] = sourceWindows['5h'];
+    }
+  }
+
+  return models;
 };

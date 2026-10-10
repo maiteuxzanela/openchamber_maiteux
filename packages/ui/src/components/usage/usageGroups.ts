@@ -60,15 +60,14 @@ export const useUsageProviderGroups = (): UsageProviderGroup[] => {
           ? modelEntries.filter(([modelName]) => providerSelectedModels.includes(modelName))
           : modelEntries;
         for (const [modelName, modelUsage] of visibleModelEntries) {
-          const entries = Object.entries(modelUsage.windows ?? {});
-          if (entries.length === 0) continue;
-          const [label, window] = entries[0];
-          rows.push({
-            key: `model-${modelName}-${label}`,
-            label: formatWindowLabel(label),
-            subtitle: getDisplayModelName(modelName),
-            window,
-          });
+          for (const [label, window] of Object.entries(modelUsage.windows ?? {})) {
+            rows.push({
+              key: `model-${modelName}-${label}`,
+              label: formatWindowLabel(label),
+              subtitle: getDisplayModelName(modelName),
+              window,
+            });
+          }
         }
 
         const refreshError = refreshErrors[providerMeta.id];

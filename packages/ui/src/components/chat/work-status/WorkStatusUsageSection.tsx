@@ -78,27 +78,55 @@ export const WorkStatusUsageSection: React.FC = () => {
 
   // Collapsed, the section shows the tightest quota of the provider the
   // composer is pointed at — the number that decides whether the next turn
-  // lands. With no match it falls back to the display-mode label rather than
+  // lands — paired with any reported weekly cycle quota.
+  // With no match it falls back to the display-mode label rather than
   // showing some other provider's quota as if it were the active one.
   const headline = pickUsageHeadline(groups, currentProviderId);
-  const headlineMetric = headline
+  const primaryRow = headline?.row;
+  const secondaryRow = headline?.secondaryRow;
+
+  const primaryMetric = primaryRow
     ? formatQuotaValueLabel(
-      headline.row.window.valueLabel,
-      displayMode === 'remaining' ? headline.row.window.remainingPercent : headline.row.window.usedPercent,
+      primaryRow.window.valueLabel,
+      displayMode === 'remaining' ? primaryRow.window.remainingPercent : primaryRow.window.usedPercent,
     )
     : null;
+
+  const secondaryMetric = secondaryRow
+    ? formatQuotaValueLabel(
+      secondaryRow.window.valueLabel,
+      displayMode === 'remaining' ? secondaryRow.window.remainingPercent : secondaryRow.window.usedPercent,
+    )
+    : null;
+
+  const hasPrimary = Boolean(primaryRow && primaryMetric && primaryMetric !== '-');
+  const hasSecondary = Boolean(secondaryRow && secondaryMetric && secondaryMetric !== '-');
 
   return (
     <WorkStatusCollapsibleSection
       id="usage"
       title={t('chat.workStatus.section.usage')}
       icon="timer"
+      summaryClassName="max-w-[72%]"
       summary={(
-        <span className="inline-flex items-center gap-1.5">
-          {headline && headlineMetric && headlineMetric !== '-' ? (
+        <span className="inline-flex min-w-0 items-center gap-1.5 truncate">
+          {hasPrimary && hasSecondary && primaryRow && secondaryRow ? (
             <>
-              <span className="truncate">{headline.row.label}</span>
-              <WorkStatusValue tone={windowTone(headline.row.window)}>{headlineMetric}</WorkStatusValue>
+              <span className="truncate">{primaryRow.label}</span>
+              <WorkStatusValue tone={windowTone(primaryRow.window)}>{primaryMetric}</WorkStatusValue>
+              <span className="text-muted-foreground/60 select-none">·</span>
+              <span className="truncate">{secondaryRow.label}</span>
+              <WorkStatusValue tone={windowTone(secondaryRow.window)}>{secondaryMetric}</WorkStatusValue>
+            </>
+          ) : hasPrimary && primaryRow ? (
+            <>
+              <span className="truncate">{primaryRow.label}</span>
+              <WorkStatusValue tone={windowTone(primaryRow.window)}>{primaryMetric}</WorkStatusValue>
+            </>
+          ) : hasSecondary && secondaryRow ? (
+            <>
+              <span className="truncate">{secondaryRow.label}</span>
+              <WorkStatusValue tone={windowTone(secondaryRow.window)}>{secondaryMetric}</WorkStatusValue>
             </>
           ) : modeLabel}
         </span>

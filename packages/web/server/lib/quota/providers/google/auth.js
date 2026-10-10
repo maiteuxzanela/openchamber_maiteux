@@ -64,7 +64,7 @@ const resolveGeminiCliAuth = (auth) => {
   };
 };
 
-const resolveAntigravityAuth = () => {
+export const resolveAntigravityAuth = () => {
   for (const filePath of ANTIGRAVITY_ACCOUNTS_PATHS) {
     const data = readJsonFile(filePath);
     const accounts = data?.accounts;
@@ -81,7 +81,8 @@ const resolveAntigravityAuth = () => {
             ?? asNonEmptyString(account.managedProjectId)
             ?? refreshParts.projectId
             ?? refreshParts.managedProjectId,
-          email: account.email
+          email: account.email,
+          cachedQuota: asObject(account.cachedQuota) ?? null
         };
       }
     }

@@ -4,7 +4,12 @@ import {
   resolveGoogleOAuthClient,
   DEFAULT_PROJECT_ID
 } from './auth.js';
-import { transformQuotaBucket, transformModelData } from './transforms.js';
+import {
+  transformQuotaBucket,
+  transformModelData,
+  transformAntigravityProviderWindows,
+  applyCachedQuotaToModels
+} from './transforms.js';
 import {
   refreshGoogleAccessToken,
   fetchGoogleQuotaBuckets,
@@ -33,8 +38,16 @@ export const fetchGoogleQuota = async () => {
 
   const models = {};
   const sourceErrors = [];
+  let providerWindows = {};
 
   for (const source of authSources) {
+    if (source.cachedQuota) {
+      const extracted = transformAntigravityProviderWindows(source.cachedQuota);
+      if (Object.keys(extracted).length > 0) {
+        providerWindows = { ...providerWindows, ...extracted };
+      }
+    }
+
     const now = Date.now();
     let accessToken = source.accessToken;
 
@@ -77,6 +90,10 @@ export const fetchGoogleQuota = async () => {
       }
     }
 
+    if (source.cachedQuota) {
+      applyCachedQuotaToModels(models, source.cachedQuota);
+    }
+
     if (!mergedAnyModel) {
       sourceErrors.push(`${source.sourceLabel}: Failed to fetch models`);
     }
@@ -98,7 +115,7 @@ export const fetchGoogleQuota = async () => {
     ok: true,
     configured: true,
     usage: {
-      windows: {},
+      windows: providerWindows,
       models: Object.keys(models).length ? models : undefined
     }
   });

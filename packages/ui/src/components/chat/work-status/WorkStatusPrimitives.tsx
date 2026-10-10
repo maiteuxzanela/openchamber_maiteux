@@ -63,13 +63,14 @@ export const WorkStatusCollapsibleSection: React.FC<{
   iconColor?: string;
   /** Shown on the header while collapsed and expanded alike. */
   summary?: React.ReactNode;
+  summaryClassName?: string;
   /** An independent header action, such as refreshing this section's data. */
   action?: React.ReactNode;
   defaultExpanded?: boolean;
   /** Optional preview that stays below the heading while the section is folded. */
   collapsedContent?: React.ReactNode;
   children: React.ReactNode;
-}> = ({ id, title, icon, iconNode, iconColor, summary, action, defaultExpanded = false, collapsedContent, children }) => {
+}> = ({ id, title, icon, iconNode, iconColor, summary, summaryClassName, action, defaultExpanded = false, collapsedContent, children }) => {
   const stored = useUIStore(
     React.useCallback((state) => state.workStatusExpandedSections[id], [id]),
   );
@@ -104,7 +105,7 @@ export const WorkStatusCollapsibleSection: React.FC<{
           />
           <span className="flex-1" />
           {summary !== undefined && summary !== null ? (
-            <span className="min-w-0 max-w-[60%] truncate text-right text-xs text-muted-foreground tabular-nums">{summary}</span>
+            <span className={cn('min-w-0 truncate text-right text-xs text-muted-foreground tabular-nums', summaryClassName ?? 'max-w-[60%]')}>{summary}</span>
           ) : null}
         </button>
         {action}
