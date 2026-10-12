@@ -781,8 +781,25 @@ export const registerOpenCodeProxy = (app, deps) => {
   // Any directory-scoped read can initialize OpenCode's cached project/config,
   // before session.create runs. Hold all upstream requests until Git population
   // finishes, independently of the user's optional setup-script wait.
+  //
+  // Exception — message dispatch: POSTs to /session/:id/{prompt_async,message,
+  // command} carry a message to a session that already exists, so the
+  // bootstrap hold cannot protect them the way it protects first-touch config
+  // reads and session creation (issue #3464). Retaining them only strangles
+  // async message delivery: every prompt waits in the 75ms worktree poll
+  // while a checkout settles, and under multi-agent concurrency that queue
+  // becomes the bottleneck that starves the message pipeline. Bypass the hold
+  // for these routes; OpenCode answers 404 itself for genuinely unknown
+  // sessions. Session creation and directory-scoped reads stay gated.
+  const MESSAGE_DISPATCH_PATH_PATTERN = /^\/session\/[^/]+\/(?:prompt_async|message|command)(?:\/|$)/;
+  const isMessageDispatchRequest = (req) => (
+    req.method === 'POST' && MESSAGE_DISPATCH_PATH_PATTERN.test(req.path)
+  );
   app.use('/api', async (req, res, next) => {
     normalizeForwardedDirectoryHeaders(req.headers);
+    if (isMessageDispatchRequest(req)) {
+      return next();
+    }
     const url = new URL(req.url, 'http://localhost');
     const directory = url.searchParams.get('directory') || req.get('x-opencode-directory');
     if (!directory) return next();

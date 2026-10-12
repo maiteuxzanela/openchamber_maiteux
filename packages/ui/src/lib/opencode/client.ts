@@ -492,6 +492,25 @@ class OpencodeService {
     return this.currentDirectory;
   }
 
+  private sessionDirectoryResolver: ((sessionId: string) => string | null | undefined) | null = null;
+
+  setSessionDirectoryResolver(resolver: ((sessionId: string) => string | null | undefined) | null) {
+    this.sessionDirectoryResolver = resolver;
+  }
+
+  resolveSessionDirectory(sessionId: string | null | undefined): string | null | undefined {
+    if (!sessionId) return null;
+    if (this.sessionDirectoryResolver) {
+      try {
+        const resolved = this.sessionDirectoryResolver(sessionId);
+        if (resolved) return resolved;
+      } catch {
+        // Fall back gracefully
+      }
+    }
+    return null;
+  }
+
   async withDirectory<T>(directory: string | undefined | null, fn: () => Promise<T>): Promise<T> {
     const runWithContext = async (): Promise<T> => {
       if (directory === undefined || directory === null) {
@@ -647,7 +666,8 @@ class OpencodeService {
   }
 
   async getSession(id: string, directory?: string | null): Promise<Session> {
-    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(id);
+    const requestDirectory = this.normalizeCandidatePath(directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.get({
       sessionID: id,
       ...(requestDirectory ? { directory: requestDirectory } : {})
@@ -656,7 +676,8 @@ class OpencodeService {
   }
 
   async deleteSession(id: string, directory?: string | null): Promise<boolean> {
-    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(id);
+    const requestDirectory = this.normalizeCandidatePath(directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.delete({
       sessionID: id,
       ...(requestDirectory ? { directory: requestDirectory } : {}),
@@ -669,7 +690,8 @@ class OpencodeService {
     patch: { title?: string; metadata?: Record<string, unknown>; time?: { archived?: number | null } },
     directory?: string | null,
   ): Promise<Session> {
-    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(id);
+    const requestDirectory = this.normalizeCandidatePath(directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     const sdkPatch = {
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.metadata !== undefined ? { metadata: patch.metadata } : {}),
@@ -684,7 +706,8 @@ class OpencodeService {
   }
 
   async getSessionMessages(id: string, limit?: number, directory?: string | null): Promise<{ info: Message; parts: Part[] }[]> {
-    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(id);
+    const requestDirectory = this.normalizeCandidatePath(directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.messages({
       sessionID: id,
       ...(requestDirectory ? { directory: requestDirectory } : {}),
@@ -695,9 +718,11 @@ class OpencodeService {
 
   async getSessionTodos(sessionId: string): Promise<Array<{ id: string; content: string; status: string; priority: string }>> {
     try {
+      const sessionDirectory = this.resolveSessionDirectory(sessionId);
+      const requestDirectory = this.normalizeCandidatePath(sessionDirectory ?? null) ?? this.currentDirectory;
       const response = await this.client.session.todo({
         sessionID: sessionId,
-        ...(this.currentDirectory ? { directory: this.currentDirectory } : {}),
+        ...(requestDirectory ? { directory: requestDirectory } : {}),
       });
       if (response.error) {
         return [];
@@ -954,7 +979,8 @@ class OpencodeService {
       throw new Error('Message must have at least one part (text or file)');
     }
 
-    const requestDirectory = this.normalizeCandidatePath(params.directory ?? null) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(params.id);
+    const requestDirectory = this.normalizeCandidatePath(params.directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
 
     if (params.format) {
       console.info('[git-generation][browser] send structured message', {
@@ -1060,7 +1086,8 @@ class OpencodeService {
       }
     }
 
-    const requestDirectory = this.normalizeCandidatePath(params.directory ?? null) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(params.id);
+    const requestDirectory = this.normalizeCandidatePath(params.directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     this.assertRuntimeUnchanged(params.runtimeKey);
 
     const response = await this.client.session.command({
@@ -1080,10 +1107,12 @@ class OpencodeService {
   }
 
   async abortSession(id: string): Promise<boolean> {
+    const sessionDirectory = this.resolveSessionDirectory(id);
+    const requestDirectory = this.normalizeCandidatePath(sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.abort(
       {
         sessionID: id,
-        ...(this.currentDirectory ? { directory: this.currentDirectory } : {})
+        ...(requestDirectory ? { directory: requestDirectory } : {})
       },
       { throwOnError: true }
     );
@@ -1100,7 +1129,8 @@ class OpencodeService {
     directory?: string | null;
   }): Promise<{ info: Message; parts: Part[] }> {
     this.assertRuntimeUnchanged(params.runtimeKey);
-    const requestDirectory = this.normalizeCandidatePath(params.directory ?? null) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(params.sessionId);
+    const requestDirectory = this.normalizeCandidatePath(params.directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.shell({
       sessionID: params.sessionId,
       ...(requestDirectory ? { directory: requestDirectory } : {}),
@@ -1113,7 +1143,8 @@ class OpencodeService {
   }
 
   async revertSession(sessionId: string, messageId: string, partId?: string, directory?: string | null): Promise<Session> {
-    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(sessionId);
+    const requestDirectory = this.normalizeCandidatePath(directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.revert({
       sessionID: sessionId,
       ...(requestDirectory ? { directory: requestDirectory } : {}),
@@ -1124,7 +1155,8 @@ class OpencodeService {
   }
 
   async summarizeSession(sessionId: string, providerId: string, modelId: string, directory?: string | null): Promise<boolean> {
-    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(sessionId);
+    const requestDirectory = this.normalizeCandidatePath(directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.summarize({
       sessionID: sessionId,
       ...(requestDirectory ? { directory: requestDirectory } : {}),
@@ -1135,15 +1167,18 @@ class OpencodeService {
   }
 
   async unrevertSession(sessionId: string): Promise<Session> {
+    const sessionDirectory = this.resolveSessionDirectory(sessionId);
+    const requestDirectory = this.normalizeCandidatePath(sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.unrevert({
       sessionID: sessionId,
-      ...(this.currentDirectory ? { directory: this.currentDirectory } : {})
+      ...(requestDirectory ? { directory: requestDirectory } : {})
     });
     return unwrapSdkData(response, 'session.unrevert');
   }
 
   async forkSession(sessionId: string, messageId?: string, directory?: string | null): Promise<Session> {
-    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
+    const sessionDirectory = this.resolveSessionDirectory(sessionId);
+    const requestDirectory = this.normalizeCandidatePath(directory ?? sessionDirectory ?? null) ?? this.currentDirectory;
     const response = await this.client.session.fork({
       sessionID: sessionId,
       ...(requestDirectory ? { directory: requestDirectory } : {}),

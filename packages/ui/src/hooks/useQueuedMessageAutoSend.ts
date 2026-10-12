@@ -8,6 +8,9 @@ import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { queuedContextToParts } from '@/components/chat/composer/submit/buildOutgoingMessage';
 import { getDirectoryState } from '@/sync/sync-refs';
 import { useDirectorySync } from '@/sync/sync-context';
+import { useStreamingStore } from '@/sync/streaming';
+import { useGlobalSessionStatusStore } from '@/sync/global-session-status';
+import { STALE_PENDING_ASSISTANT_TIMEOUT_MS } from '@/hooks/useSessionActivity';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { createInputHistorySubmission } from '@/stores/useInputHistoryStore';
@@ -196,11 +199,16 @@ export const shouldDispatchQueuedAutoSend = (
  */
 export const resolveQueuedSessionStatusType = (
   sessionId: string,
-  directory: string,
+  directory?: string,
 ): SessionStatusType => {
   const state = getDirectoryState(directory);
-  const statusType = state?.session_status?.[sessionId]?.type;
-  if (statusType === 'busy' || statusType === 'retry') {
+  const statusType = state?.session_status?.[sessionId]?.type
+    ?? useGlobalSessionStatusStore.getState().statusById.get(sessionId)?.status?.type;
+  if (statusType === 'busy' || statusType === 'retry' || statusType === 'idle') {
+    // The backend status is authoritative: an explicit 'idle' must win over
+    // the trailing-message fallback below, otherwise a residual in-flight
+    // assistant message without a completion timestamp would hold the queue
+    // for up to STALE_PENDING_ASSISTANT_TIMEOUT_MS (10s).
     return statusType;
   }
   const sessionMessages = state?.message?.[sessionId];
@@ -210,7 +218,22 @@ export const resolveQueuedSessionStatusType = (
   if (
     lastMessage?.role === 'assistant'
     && typeof (lastMessage as { time?: { completed?: number } }).time?.completed !== 'number'
+    && !(lastMessage as { finish?: unknown }).finish
   ) {
+    const isStreaming = Boolean(
+      useStreamingStore.getState().streamingMessageIds.get(sessionId) === lastMessage.id
+    );
+    if (isStreaming) {
+      return 'busy';
+    }
+    const lastTime = (lastMessage as { time?: { updated?: number; created?: number } }).time;
+    const rawTimestamp = lastTime?.updated ?? lastTime?.created;
+    if (typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp)) {
+      const timestampMs = rawTimestamp < 1e10 ? rawTimestamp * 1000 : rawTimestamp;
+      if (timestampMs > 1e10 && (Date.now() - timestampMs) > STALE_PENDING_ASSISTANT_TIMEOUT_MS) {
+        return 'idle';
+      }
+    }
     return 'busy';
   }
   return 'idle';
@@ -226,6 +249,11 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
   // the trailing assistant message completes even if status events were missed.
   const sessionMessages = useDirectorySync((state) => state.message);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
+  // Authoritative backend statuses live in the global map (not only in the
+  // current directory's child store): a session that goes idle in another
+  // directory/worktree must also wake this effect. Subscribing reactively
+  // guarantees any status transition re-runs the queue dispatch.
+  const globalStatusById = useGlobalSessionStatusStore((state) => state.statusById);
 
   const inFlightSessionsRef = React.useRef<Set<string>>(new Set());
   const sendFailuresRef = React.useRef<Map<string, QueuedAutoSendFailure>>(new Map());
@@ -339,7 +367,7 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     const queueEntries = Object.entries(queuedMessages);
     queueEntries.forEach(([key, queue]) => {
       const target = parseMessageQueueKey(key);
-      if (!target || target.runtimeKey !== getRuntimeKey() || target.directory !== currentDirectory) return;
+      if (!target || target.runtimeKey !== getRuntimeKey()) return;
       const { sessionId } = target;
       const currentStatusType = resolveQueuedSessionStatusType(sessionId, target.directory);
       const previousStatusType = previousStatusRef.current.get(sessionId);
@@ -362,5 +390,5 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     });
 
     previousStatusRef.current = nextStatusMap;
-  }, [enabled, queuedMessages, sessionStatusRecord, sessionMessages, autoReviewRuns, currentDirectory, retryTick, retryScheduler]);
+  }, [enabled, queuedMessages, sessionStatusRecord, sessionMessages, globalStatusById, autoReviewRuns, currentDirectory, retryTick, retryScheduler]);
 }

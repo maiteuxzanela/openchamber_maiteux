@@ -904,6 +904,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.queuedMessage.clearQueue': 'Wyczyść kolejkę',
   'chat.queuedMessage.removeAria': 'Usuń z kolejki',
   'chat.queuedMessage.reorderAria': 'Przeciągnij, aby zmienić kolejność',
+  'chat.queuedMessage.toast.queued': 'Wiadomość dodana do kolejki.',
   'chat.queuedMessage.toast.queueFailed': 'Nie udało się dodać wiadomości do kolejki. Wróciła do pola wpisywania.',
   'chat.queuedMessage.toast.takeFailed': 'Nie udało się wczytać wiadomości z kolejki. Spróbuj ponownie.',
   'chat.queuedMessage.toast.cleared': 'Wyczyszczono kolejkę wiadomości.',

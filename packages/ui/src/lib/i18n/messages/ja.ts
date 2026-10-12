@@ -2265,6 +2265,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.queuedMessage.clearQueue': 'キューをクリア',
   'chat.queuedMessage.removeAria': 'キューから削除',
   'chat.queuedMessage.reorderAria': 'ドラッグして並び替え',
+  'chat.queuedMessage.toast.queued': 'メッセージをキューに追加しました。',
   'chat.queuedMessage.toast.queueFailed': 'メッセージをキューに追加できませんでした。入力欄に戻しました。',
   'chat.queuedMessage.toast.takeFailed': 'キューのメッセージを読み込めませんでした。もう一度お試しください。',
   'chat.queuedMessage.toast.cleared': 'キューをクリアしました。',

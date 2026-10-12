@@ -3,6 +3,31 @@ import express from 'express';
 import path from 'node:path';
 import { registerOpenCodeProxy } from './lib/opencode/proxy.js';
 
+if (typeof expect.poll !== 'function') {
+  expect.poll = (fn, options) => ({
+    toBeGreaterThanOrEqual: async (expected) => {
+      const start = Date.now();
+      const timeout = options?.timeout ?? 2000;
+      const interval = options?.interval ?? 20;
+      while (Date.now() - start < timeout) {
+        if ((await fn()) >= expected) return;
+        await new Promise((r) => setTimeout(r, interval));
+      }
+      expect(await fn()).toBeGreaterThanOrEqual(expected);
+    },
+    toBeGreaterThan: async (expected) => {
+      const start = Date.now();
+      const timeout = options?.timeout ?? 2000;
+      const interval = options?.interval ?? 20;
+      while (Date.now() - start < timeout) {
+        if ((await fn()) > expected) return;
+        await new Promise((r) => setTimeout(r, interval));
+      }
+      expect(await fn()).toBeGreaterThan(expected);
+    },
+  });
+}
+
 const servers = [];
 const listen = async (app) => {
   const server = await new Promise((resolve) => {
@@ -106,10 +131,11 @@ describe('issue #3464 worktree OpenCode initialization', () => {
     const response = fetch(`${fixture.url}/api/config?directory=${encodeURIComponent(worktree)}`, {
       signal: controller.signal,
     });
-    const rejected = expect(response).rejects.toThrow();
+    const rejected = response.catch((err) => err);
     await expect.poll(() => fixture.probed.length).toBeGreaterThan(0);
     controller.abort();
-    await rejected;
+    const error = await rejected;
+    expect(error).toBeInstanceOf(Error);
     // Allow the server to observe the closed client before releasing checkout.
     await new Promise((resolve) => setTimeout(resolve, 100));
     fixture.setBootstrap({ status: 'ready', phase: 'setup-ready', error: null });
@@ -126,5 +152,19 @@ describe('issue #3464 worktree OpenCode initialization', () => {
     expect(failed.status).toBe(503);
     expect(await failed.json()).toEqual({ error: 'checkout failed' });
     expect(fixture.forwarded).toEqual([]);
+  });
+
+  it('bypasses worktree readiness hold for message-dispatch routes (prompt_async, message, command)', async () => {
+    const fixture = await createFixture({ timeoutMs: 1000 });
+    // Worktree status is pending/directory-created (not ready)
+    const promptResponse = await fetch(`${fixture.url}/api/session/ses_test/prompt_async?directory=${encodeURIComponent(worktree)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ parts: [{ type: 'text', text: 'hello' }] }),
+    });
+    expect(promptResponse.status).toBe(200);
+    expect(fixture.forwarded).toContain('/session/ses_test/prompt_async');
+    // Notice probed was not called because the middleware bypassed the worktree hold completely
+    expect(fixture.probed).toEqual([]);
   });
 });

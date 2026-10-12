@@ -2301,6 +2301,12 @@ setSessionOpener((sessionID, directory) => {
   useSessionUIStore.getState().setCurrentSession(sessionID, directory)
 })
 
+if (typeof opencodeClient?.setSessionDirectoryResolver === 'function') {
+  opencodeClient.setSessionDirectoryResolver((sessionId) => {
+    return useSessionUIStore.getState().getDirectoryForSession(sessionId);
+  })
+}
+
 // Write-through persist of the worktree map whenever discovery refreshes it.
 // Reference-equality guard filters hot session updates; the serialized
 // comparison avoids redundant localStorage writes when the Map reference

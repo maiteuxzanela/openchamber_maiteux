@@ -2247,6 +2247,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.queuedMessage.clearQueue": "Limpiar cola",
   "chat.queuedMessage.removeAria": "Eliminar de la cola",
   "chat.queuedMessage.reorderAria": "Arrastra para reordenar",
+  "chat.queuedMessage.toast.queued": "Mensaje añadido a la cola.",
   "chat.queuedMessage.toast.queueFailed": "No se pudo poner el mensaje en cola. Vuelve a estar en el editor.",
   "chat.queuedMessage.toast.takeFailed": "No se pudo cargar el mensaje en cola. Inténtalo de nuevo.",
   "chat.queuedMessage.toast.cleared": "Cola de mensajes limpiada.",

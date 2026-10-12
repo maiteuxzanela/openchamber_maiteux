@@ -1840,12 +1840,12 @@ export async function optimisticSend(input: {
       return
     }
 
-    // The rollback below makes the user's message disappear with no other
-    // trace, and the composer intentionally stays silent for transport-level
-    // failures. Record the failure so the About dialog's diagnostics report can
-    // answer "it disappeared and nothing happened" with an actual cause.
+    // Record the failure so the About dialog's diagnostics report can
+    // provide the cause. When rolled back, re-throw so the caller (ChatInput)
+    // does not swallow the failure silently, restoring draft text and notifying the user.
     // `reason` is truncated by the recorder: a rejected send echoes the
     // provider/OpenCode response body, which this log has no reason to keep.
+    const failureReason = error instanceof Error ? error.message : String(error)
     const failureRecord = {
       sessionId: input.sessionId,
       messageId: messageID,
@@ -1853,7 +1853,7 @@ export async function optimisticSend(input: {
       status,
       ambiguous: ambiguousFailure,
       confirmationChecked: ambiguousFailure,
-      reason: error instanceof Error ? error.message : String(error),
+      reason: failureReason,
     }
     recordSendFailure(failureRecord)
     console.warn("[session-actions] prompt send rejected; rolling back optimistic message", failureRecord)
@@ -1892,7 +1892,8 @@ export async function optimisticSend(input: {
         [input.sessionId]: { type: "idle" as const },
       },
     })
-    throw error
+    const sendError = error instanceof Error ? error : new Error(String(error || "Failed to send message: transport failure"))
+    throw sendError
   }
 }
 

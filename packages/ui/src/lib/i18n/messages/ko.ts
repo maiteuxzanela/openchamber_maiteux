@@ -2271,6 +2271,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.queuedMessage.clearQueue': '큐 지우기',
   'chat.queuedMessage.removeAria': '큐에서 제거',
   'chat.queuedMessage.reorderAria': '드래그하여 순서 변경',
+  'chat.queuedMessage.toast.queued': '메시지를 대기열에 추가했습니다.',
   'chat.queuedMessage.toast.queueFailed': '메시지를 대기열에 추가하지 못했습니다. 입력창으로 되돌렸습니다.',
   'chat.queuedMessage.toast.takeFailed': '대기열의 메시지를 불러오지 못했습니다. 다시 시도해 주세요.',
   'chat.queuedMessage.toast.cleared': '메시지 큐가 지워졌습니다.',

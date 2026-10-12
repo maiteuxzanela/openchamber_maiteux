@@ -2247,6 +2247,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.queuedMessage.clearQueue": "Limpar Fila",
   "chat.queuedMessage.removeAria": "Excluir da fila",
   "chat.queuedMessage.reorderAria": "Arraste para reordenar",
+  "chat.queuedMessage.toast.queued": "Mensagem adicionada à fila de espera.",
   "chat.queuedMessage.toast.queueFailed": "Não foi possível enfileirar a mensagem. Ela voltou para o campo de texto.",
   "chat.queuedMessage.toast.takeFailed": "Não foi possível carregar a mensagem da fila. Tente novamente.",
   "chat.queuedMessage.toast.cleared": "Fila de mensagens limpa.",

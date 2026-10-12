@@ -2228,6 +2228,7 @@ export const dict = {
   'chat.queuedMessage.clearQueue': 'Kuyruğu temizle',
   'chat.queuedMessage.removeAria': 'Kuyruktan kaldır',
   'chat.queuedMessage.reorderAria': 'Yeniden sıralamak için sürükle',
+  'chat.queuedMessage.toast.queued': 'Mesaj kuyruğa eklendi.',
   'chat.queuedMessage.toast.queueFailed': 'Mesaj kuyruğa eklenemedi. Yazma alanına geri kondu.',
   'chat.queuedMessage.toast.takeFailed': 'Kuyruktaki mesaj yüklenemedi. Lütfen tekrar deneyin.',
   'chat.queuedMessage.toast.cleared': 'Mesaj kuyruğu temizlendi.',

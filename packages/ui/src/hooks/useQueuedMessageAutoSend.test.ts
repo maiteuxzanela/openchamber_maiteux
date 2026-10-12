@@ -3,6 +3,7 @@ import type { Agent, Message } from '@opencode-ai/sdk/v2';
 import type { QueuedMessage } from '../stores/messageQueueStore';
 import { ChildStoreManager } from '@/sync/child-store';
 import { setSyncRefs } from '@/sync/sync-refs';
+import { useStreamingStore } from '@/sync/streaming';
 
 let visibleAgents: Agent[] = [];
 const sendMessageCalls: unknown[][] = [];
@@ -172,6 +173,52 @@ describe('resolveQueuedSessionStatusType', () => {
     store.setState({ session_status: { ses_1: { type: 'idle' } } });
     expect(resolveQueuedSessionStatusType('ses_1', DIRECTORY)).toBe('idle');
     expect(resolveQueuedSessionStatusType('ses_unknown', DIRECTORY)).toBe('idle');
+  });
+
+  test('honors an explicit idle status immediately even with a residual in-flight assistant message', () => {
+    // Regression: a backend `idle` is authoritative. A residual trailing
+    // assistant message with no completion timestamp must NOT hold the queue
+    // busy for up to STALE_PENDING_ASSISTANT_TIMEOUT_MS (10s) — the first
+    // queued prompt has to drain on the very next evaluation instead.
+    const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
+    store.setState({
+      session_status: { ses_1: { type: 'idle' } },
+      message: { ses_1: [assistantMessage('msg_residual')] },
+    });
+
+    expect(resolveQueuedSessionStatusType('ses_1', DIRECTORY)).toBe('idle');
+  });
+
+  test('resolves idle when trailing assistant message is stale (>10s old) and not streaming', () => {
+    const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
+    const staleMsg: Message = {
+      id: 'msg_stale',
+      role: 'assistant',
+      sessionID: 'ses_1',
+      time: { created: Date.now() - 25_000 },
+    } as Message;
+    store.setState({ message: { ses_1: [staleMsg] } });
+    expect(resolveQueuedSessionStatusType('ses_1', DIRECTORY)).toBe('idle');
+  });
+
+  test('resolves busy when trailing assistant message is actively streaming', () => {
+    const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
+    const streamingMsg: Message = {
+      id: 'msg_stream_active',
+      role: 'assistant',
+      sessionID: 'ses_1',
+      time: { created: Date.now() - 25_000 },
+    } as Message;
+    store.setState({ message: { ses_1: [streamingMsg] } });
+    useStreamingStore.setState({
+      streamingMessageIds: new Map([['ses_1', 'msg_stream_active']]),
+      messageStreamStates: new Map(),
+    });
+    expect(resolveQueuedSessionStatusType('ses_1', DIRECTORY)).toBe('busy');
+    useStreamingStore.setState({
+      streamingMessageIds: new Map(),
+      messageStreamStates: new Map(),
+    });
   });
 });
 

@@ -350,3 +350,30 @@ describe('opencodeClient prompt retry behavior', () => {
     expect(promptAsyncCalls).toHaveLength(0);
   });
 });
+
+describe('opencodeClient session directory resolution', () => {
+  beforeEach(() => {
+    promptAsyncCalls.length = 0;
+    promptAsyncResults.length = 0;
+  });
+
+  test('prefers authoritative session directory from resolver over currentDirectory when params.directory is omitted', async () => {
+    opencodeClient.setDirectory('/global/fallback');
+    opencodeClient.setSessionDirectoryResolver((sessionId: string) => {
+      if (sessionId === 'ses_custom') return '/authoritative/session/dir';
+      return null;
+    });
+
+    promptAsyncResults.push({ response: new Response('{}', { status: 200 }) });
+    await opencodeClient.sendMessage({
+      id: 'ses_custom',
+      providerID: 'test-provider',
+      modelID: 'test-model',
+      text: 'hello from authoritative session',
+    });
+
+    expect(promptAsyncCalls.length).toBe(1);
+    expect((promptAsyncCalls[0][0] as { directory?: string }).directory).toBe('/authoritative/session/dir');
+    opencodeClient.setSessionDirectoryResolver(null);
+  });
+});

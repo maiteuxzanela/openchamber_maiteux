@@ -2057,6 +2057,7 @@ export const dict = {
   'chat.queuedMessage.clearQueue': 'Warteschlange leeren',
   'chat.queuedMessage.removeAria': 'Aus der Warteschlange entfernen',
   'chat.queuedMessage.reorderAria': 'Ziehen, um neu anzuordnen',
+  'chat.queuedMessage.toast.queued': 'Nachricht in die Warteschlange eingereiht.',
   'chat.queuedMessage.toast.queueFailed': 'Die Nachricht konnte nicht in die Warteschlange gestellt werden. Sie ist wieder im Eingabefeld.',
   'chat.queuedMessage.toast.takeFailed': 'Die Nachricht aus der Warteschlange konnte nicht geladen werden. Bitte erneut versuchen.',
   'chat.queuedMessage.toast.cleared': 'Warteschlange geleert.',

@@ -1995,6 +1995,7 @@ export const dict = {
   'chat.queuedMessage.clearQueue': 'Vider la file',
   'chat.queuedMessage.removeAria': 'Supprimer de la file d\'attente',
   'chat.queuedMessage.reorderAria': 'Glisser pour réorganiser',
+  'chat.queuedMessage.toast.queued': 'Message ajouté à la file d\'attente.',
   'chat.queuedMessage.toast.queueFailed': 'Impossible de mettre le message en file d\'attente. Il est de retour dans l\'éditeur.',
   'chat.queuedMessage.toast.takeFailed': 'Impossible de charger le message en file d\'attente. Veuillez réessayer.',
   'chat.queuedMessage.toast.cleared': 'File d\'attente vidée.',

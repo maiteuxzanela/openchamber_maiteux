@@ -1,4 +1,5 @@
 import React from 'react';
+import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { isDesktopShell, isWebRuntime } from '@/lib/desktop';
 import { getRuntimeUrlResolver } from '@/lib/runtime-url';
@@ -30,7 +31,18 @@ export const useWebNotificationStream = (options?: { enabled?: boolean }) => {
   const enabled = options?.enabled ?? true;
 
   React.useEffect(() => {
-    if (!enabled || isDesktopShell() || !isWebRuntime() || typeof window === 'undefined' || typeof EventSource === 'undefined') {
+    const isEmbedded =
+      isEmbeddedSessionChat() ||
+      (typeof window !== 'undefined' && typeof window.location?.search === 'string' && window.location.search.includes('ocPanel='));
+
+    if (
+      !enabled ||
+      isDesktopShell() ||
+      !isWebRuntime() ||
+      typeof window === 'undefined' ||
+      typeof EventSource === 'undefined' ||
+      isEmbedded
+    ) {
       return;
     }
 

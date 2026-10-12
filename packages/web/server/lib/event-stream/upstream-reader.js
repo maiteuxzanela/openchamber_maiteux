@@ -1,7 +1,12 @@
 import { parseSseEventEnvelope } from './protocol.js';
 
-export const DEFAULT_UPSTREAM_STALL_TIMEOUT_MS = 20_000;
-export const UPSTREAM_STALL_TIMEOUT_CONCURRENT_MS = DEFAULT_UPSTREAM_STALL_TIMEOUT_MS * 3;
+// Raised from 20s/60s: under multi-agent concurrency, ordinary response
+// latences (tool runs, provider backpressure) routinely exceed 20s of
+// silence on the event stream, and the old values aborted healthy streams
+// as `upstream_stalled`, forcing reconnect churn. 60s tolerates single
+// session pauses; 120s tolerates the multiplied pause of concurrent agents.
+export const DEFAULT_UPSTREAM_STALL_TIMEOUT_MS = 60_000;
+export const UPSTREAM_STALL_TIMEOUT_CONCURRENT_MS = 120_000;
 export const DEFAULT_UPSTREAM_RECONNECT_DELAY_MS = 250;
 
 function resolveTimeoutMs(value, fallback) {

@@ -2269,6 +2269,7 @@ export const dict = {
   'chat.queuedMessage.clearQueue': 'Clear Queue',
   'chat.queuedMessage.removeAria': 'Remove from queue',
   'chat.queuedMessage.reorderAria': 'Drag to reorder',
+  'chat.queuedMessage.toast.queued': 'Message added to queue.',
   'chat.queuedMessage.toast.queueFailed': 'Couldn\'t queue the message. It\'s back in the composer.',
   'chat.queuedMessage.toast.takeFailed': 'Couldn\'t load the queued message. Please try again.',
   'chat.queuedMessage.toast.cleared': 'Message queue cleared.',

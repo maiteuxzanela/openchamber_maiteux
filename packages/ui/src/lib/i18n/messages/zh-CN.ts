@@ -2235,6 +2235,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.queuedMessage.clearQueue': '清空队列',
   'chat.queuedMessage.removeAria': '从队列移除',
   'chat.queuedMessage.reorderAria': '拖动以重新排序',
+  'chat.queuedMessage.toast.queued': '消息已加入队列。',
   'chat.queuedMessage.toast.queueFailed': '无法将消息加入队列，已放回输入框。',
   'chat.queuedMessage.toast.takeFailed': '无法加载队列中的消息，请重试。',
   'chat.queuedMessage.toast.cleared': '已清空消息队列。',
