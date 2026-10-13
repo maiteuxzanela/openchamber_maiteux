@@ -2,6 +2,7 @@ import { buildResult } from '../../utils/index.js';
 import {
   resolveGoogleAuthSources,
   resolveGoogleOAuthClient,
+  resolveAntigravityAuth,
   DEFAULT_PROJECT_ID
 } from './auth.js';
 import {
@@ -97,6 +98,22 @@ export const fetchGoogleQuota = async () => {
     if (!mergedAnyModel) {
       sourceErrors.push(`${source.sourceLabel}: Failed to fetch models`);
     }
+  }
+
+  // Ensure providerWindows has both 5h and weekly from Antigravity cachedQuota
+  if (!providerWindows['5h'] || !providerWindows.weekly) {
+    const antigravityAuth = resolveAntigravityAuth();
+    if (antigravityAuth?.cachedQuota) {
+      const extracted = transformAntigravityProviderWindows(antigravityAuth.cachedQuota);
+      providerWindows = { ...extracted, ...providerWindows };
+    }
+  }
+
+  // Always ensure all discovered models are enriched with 5h and weekly windows
+  const fallbackCachedQuota = authSources.find((s) => s.cachedQuota)?.cachedQuota
+    ?? resolveAntigravityAuth()?.cachedQuota;
+  if (fallbackCachedQuota) {
+    applyCachedQuotaToModels(models, fallbackCachedQuota);
   }
 
   if (!Object.keys(models).length) {

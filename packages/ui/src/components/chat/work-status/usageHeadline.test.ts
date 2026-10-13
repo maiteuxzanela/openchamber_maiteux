@@ -179,4 +179,58 @@ describe('pickUsageHeadline and pickUsageHeadlines', () => {
   test('returns null for a matched provider that reported no rows', () => {
     expect(pickUsageHeadline([group('codex', [])], 'codex')).toBeNull();
   });
+
+  test('strictly filters by active model avoiding Claude Opus/Sonnet 98% leak when using Gemini', () => {
+    const googleAntigravityGroups = [
+      group('google', [
+        { key: 'window-5h', label: '5-Hour', seconds: 5 * HOUR, used: 3 },
+        { key: 'window-weekly', label: 'Semanal', seconds: 7 * 24 * HOUR, used: 59 },
+        { key: 'model-claude-opus-5h', label: '5-Hour', subtitle: 'Claude Opus', seconds: 5 * HOUR, used: 98 },
+        { key: 'model-claude-opus-w', label: 'Semanal', subtitle: 'Claude Opus', seconds: 7 * 24 * HOUR, used: 98 },
+        { key: 'model-claude-sonnet-5h', label: '5-Hour', subtitle: 'Claude Sonnet', seconds: 5 * HOUR, used: 95 },
+      ]),
+    ];
+
+    // When session is pointed at Gemini, Claude Opus/Sonnet must not leak
+    const headline = pickUsageHeadline(googleAntigravityGroups, 'google', 'gemini-2.5-flash');
+    expect(headline?.row.label).toBe('5-Hour');
+    expect(headline?.row.window.usedPercent).toBe(3);
+    expect(headline?.secondaryRow?.label).toBe('Semanal');
+    expect(headline?.secondaryRow?.window.usedPercent).toBe(59);
+  });
+
+  test('filters by active model when only model rows exist, matching active model', () => {
+    const modelOnlyGroups = [
+      group('google', [
+        { key: 'model-claude-opus-5h', label: '5-Hour', subtitle: 'Claude Opus', seconds: 5 * HOUR, used: 98 },
+        { key: 'model-claude-opus-w', label: 'Semanal', subtitle: 'Claude Opus', seconds: 7 * 24 * HOUR, used: 98 },
+        { key: 'model-gemini-2.5-5h', label: '5-Hour', subtitle: 'gemini-2.5-flash', seconds: 5 * HOUR, used: 5 },
+        { key: 'model-gemini-2.5-w', label: 'Semanal', subtitle: 'gemini-2.5-flash', seconds: 7 * 24 * HOUR, used: 25 },
+      ]),
+    ];
+
+    const geminiHeadline = pickUsageHeadline(modelOnlyGroups, 'google', 'gemini-2.5-flash');
+    expect(geminiHeadline?.row.label).toBe('5-Hour');
+    expect(geminiHeadline?.row.window.usedPercent).toBe(5);
+    expect(geminiHeadline?.secondaryRow?.label).toBe('Semanal');
+    expect(geminiHeadline?.secondaryRow?.window.usedPercent).toBe(25);
+
+    const claudeHeadline = pickUsageHeadline(modelOnlyGroups, 'google', 'antigravity/claude-opus');
+    expect(claudeHeadline?.row.label).toBe('5-Hour');
+    expect(claudeHeadline?.row.window.usedPercent).toBe(98);
+    expect(claudeHeadline?.secondaryRow?.label).toBe('Semanal');
+    expect(claudeHeadline?.secondaryRow?.window.usedPercent).toBe(98);
+  });
+
+  test('does not leak non-gemini model rows when active is gemini and no gemini rows exist', () => {
+    const nonGeminiOnly = [
+      group('google', [
+        { key: 'model-claude-opus-5h', label: '5-Hour', subtitle: 'Claude Opus', seconds: 5 * HOUR, used: 98 },
+        { key: 'model-claude-opus-w', label: 'Semanal', subtitle: 'Claude Opus', seconds: 7 * 24 * HOUR, used: 98 },
+      ]),
+    ];
+
+    const headline = pickUsageHeadline(nonGeminiOnly, 'google', 'gemini-2.5-flash');
+    expect(headline).toBeNull();
+  });
 });

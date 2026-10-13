@@ -316,7 +316,8 @@
 
 .oc-glass-popover {
   --oc-glass-color: var(--surface-elevated);
-  --oc-glass-opacity: var(--oc-glass-popover-opacity);
+  --oc-glass-opacity: 100%;
+  background-color: var(--surface-elevated) !important;
 }
 
 .oc-glass-tooltip {
@@ -328,10 +329,12 @@
   --oc-glass-color: var(--surface-muted);
 }
 
-/* The chat composer floating over the transcript. */
+/* The chat composer floating over the transcript.
+   Fully opaque and solid to prevent message text bleeding underneath in WebKitGTK. */
 .oc-glass-composer {
   --oc-glass-color: var(--surface-elevated);
-  --oc-glass-opacity: var(--oc-glass-popover-opacity);
+  --oc-glass-opacity: 100%;
+  background-color: var(--surface-elevated) !important;
 }
 
 .oc-glass-floating {

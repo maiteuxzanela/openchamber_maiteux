@@ -120,4 +120,55 @@ describe('Google / Antigravity transforms', () => {
     expect(models['antigravity/claude-sonnet-5-5'].windows.weekly).toBeDefined();
     expect(models['antigravity/claude-sonnet-5-5'].windows.weekly.usedPercent).toBe(0);
   });
+
+  it('extracts provider windows when passing full account object with cachedQuota', () => {
+    const account = {
+      email: 'test@example.com',
+      cachedQuota: SAMPLE_CACHED_QUOTA
+    };
+    const providerWindows = transformAntigravityProviderWindows(account);
+
+    expect(providerWindows['5h']).toBeDefined();
+    expect(providerWindows['5h'].usedPercent).toBe(5);
+    expect(providerWindows.weekly).toBeDefined();
+    expect(providerWindows.weekly.usedPercent).toBe(59);
+  });
+
+  it('enriches models when passing account object with cachedQuota to applyCachedQuotaToModels', () => {
+    const account = {
+      email: 'test@example.com',
+      cachedQuota: SAMPLE_CACHED_QUOTA
+    };
+    const models = {
+      'antigravity/gemini-2.5-pro': {}
+    };
+
+    applyCachedQuotaToModels(models, account);
+
+    expect(models['antigravity/gemini-2.5-pro'].windows['5h']).toBeDefined();
+    expect(models['antigravity/gemini-2.5-pro'].windows['5h'].usedPercent).toBe(5);
+    expect(models['antigravity/gemini-2.5-pro'].windows.weekly).toBeDefined();
+    expect(models['antigravity/gemini-2.5-pro'].windows.weekly.usedPercent).toBe(59);
+  });
+
+  it('derives weekly window from top-level remainingFraction when windows array only contains 5h', () => {
+    const quotaOnly5h = {
+      remainingFraction: 0.35,
+      resetTime: '2026-10-18T10:00:00Z',
+      windows: [
+        {
+          window: '5h',
+          remainingFraction: 0.8,
+          resetTime: '2026-10-12T15:00:00Z'
+        }
+      ]
+    };
+    const windows = transformCachedQuotaWindows(quotaOnly5h);
+
+    expect(windows['5h']).toBeDefined();
+    expect(windows['5h'].usedPercent).toBe(20);
+    expect(windows.weekly).toBeDefined();
+    expect(windows.weekly.usedPercent).toBe(65);
+    expect(windows.weekly.windowSeconds).toBe(7 * 24 * 60 * 60);
+  });
 });

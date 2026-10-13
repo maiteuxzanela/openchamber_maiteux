@@ -1,6 +1,6 @@
 # 📋 Kanban — Acoplamento Nativo dos Plugins Dreams & Ensemble no OpenCode
 
-> **Objetivo:** Embarcar os plugins `@hueyexe/opencode-ensemble` e `opencode-plugin-dreams` diretamente na distribuição própria do OpenCode, garantindo que instalações já venham com multi-agentes e memórias ativas por padrão (*batteries-included*), sem exigir downloads no primeiro boot nem duplicar código-fonte.
+> **Objetivo:** Embarcar os plugins `@maiteuxzanela/ensemble-room-lowcost` (versão própria customizada: https://github.com/maiteuxzanela/ensemble-room-lowcost) e `opencode-plugin-dreams` diretamente na distribuição própria do OpenCode, garantindo que instalações já venham com multi-agentes e memórias ativas por padrão (*batteries-included*), sem exigir downloads no primeiro boot nem duplicar código-fonte.
 
 ---
 
@@ -11,12 +11,13 @@
 |              A FAZER               |          EM PROGRESSO          |          CONCLUÍDO          |
 |              (BACKLOG)             |            (DOING)             |           (DONE)            |
 +------------------------------------+--------------------------------+-----------------------------+
-| [ ] 1. Mapeamento dos Entrypoints  |                                | [x] Definição de Arquitetura|
-| [ ] 2. Declaração de Dependências  |                                |     (Dependências NPM vs    |
-| [ ] 3. Registro no Plugin Loader   |                                |     Fork Duplicado)         |
-| [ ] 4. Injeção de Seeds & Schemas  |                                |                             |
-| [ ] 5. Testes E2E de Cold-Start    |                                |                             |
-| [ ] 6. Script de Release & Bump    |                                |                             |
+|                                    |                                | [x] Definição de Arquitetura|
+|                                    |                                | [x] 1. Mapeamento Loader    |
+|                                    |                                | [x] 2. Declaração Deps      |
+|                                    |                                | [x] 3. Injeção Built-ins    |
+|                                    |                                | [x] 4. Schemas Zero-Config  |
+|                                    |                                | [x] 5. Testes Cold-Start    |
+|                                    |                                | [x] 6. Script Sync & Bump   |
 +------------------------------------+--------------------------------+-----------------------------+
 ```
 
@@ -29,13 +30,13 @@
 - **Critério de Aceite:** Identificar a função de inicialização onde os plugins built-in podem ser instanciados antes da leitura do `opencode.json` do usuário.
 
 ### card-02: Adicionar Plugins ao `package.json` do Core
-- **Escopo:** Declarar `@hueyexe/opencode-ensemble` e `opencode-plugin-dreams` nas dependências normais do pacote (`dependencies`).
-- **Critério de Aceite:** Versionamento flexível (`^x.y.z`) que permite atualizar com um simples `bun update` sem tocar no código interno dos plugins.
+- **Escopo:** Declarar `@maiteuxzanela/ensemble-room-lowcost` (`github:maiteuxzanela/ensemble-room-lowcost`) e `opencode-plugin-dreams` nas dependências normais do pacote (`dependencies`).
+- **Critério de Aceite:** Versionamento flexível (`^x.y.z` ou tracking de tag/commit do github) que permite atualizar com um simples `bun update` sem tocar no código interno dos plugins.
 
 ### card-03: Injetar Built-ins no Ciclo de Vida do Runtime
 - **Escopo:** Criar o array `BUILT_IN_PLUGINS` no loader do OpenCode:
   ```typescript
-  import ensemblePlugin from '@hueyexe/opencode-ensemble';
+  import ensemblePlugin from '@maiteuxzanela/ensemble-room-lowcost';
   import dreamsPlugin from 'opencode-plugin-dreams';
 
   export const BUILT_IN_PLUGINS = [
@@ -60,7 +61,7 @@
 ---
 
 ## 📌 Coluna 2: Em Progresso (Doing)
-*(Aguardando priorização da Maiteux após a entrega atual de resiliência de transporte).*
+*(Todas as tarefas ativas foram concluídas pelo time).*
 
 ---
 
@@ -69,3 +70,33 @@
 - [x] **Definição de Estratégia Arquitetural:**
   * **Decisão:** Rejeitada a clonagem/duplicação de código em subpastas (para evitar sincronizações manuais).
   * **Padrão Adotado:** Acoplamento via dependência formal de pacote (*Built-in Plugin via NPM Dependencies*). Os repositórios do Dreams e do Ensemble permanecem 100% autônomos para qualquer usuário externo, e a distribuição própria do OpenCode apenas os empacota compilados no binário final.
+
+- [x] **Card 01 — Mapeamento dos Entrypoints do Plugin Loader no Core:**
+  * **Módulo de Registro Built-in:** [`packages/core/src/plugin/internal.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/plugin/internal.ts)
+  * **Ciclo de Vida e Supervisão:** [`packages/core/src/plugin/supervisor.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/plugin/supervisor.ts)
+  * **Interface de Adaptação:** [`packages/core/src/plugin/module.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/plugin/module.ts)
+
+- [x] **Card 02 — Adicionar Plugins ao `package.json` do Core:**
+  * Registrados em `packages/core/package.json` sob `"dependencies"`:
+    - `"@maiteuxzanela/ensemble-room-lowcost": "github:maiteuxzanela/ensemble-room-lowcost#486d2fc"`
+    - `"opencode-plugin-dreams": "github:maiteuxzanela/chamber_dream#0529d49"`
+  * Resolução e lockfile persistidos via `bun install --ignore-scripts` gerando o `bun.lock`.
+
+- [x] **Card 03 — Injetar Built-ins no Ciclo de Vida do Runtime (`internal.ts`):**
+  * Criados adapters modulares em `packages/core/src/plugin/builtin/ensemble.ts` e `packages/core/src/plugin/builtin/dreams.ts`.
+  * Padrão com importação dinâmica widened string (`PACKAGE: string`) sob `Effect.promise` e `PluginPromise.fromPromise`, blindando o compilador contra invasão de escopo estrito de tipos e capturando erros sob `Effect.exit`.
+  * Integrados na lista `post` de `packages/core/src/plugin/internal.ts`, permitindo que configurações explícitas do usuário em `opencode.json` continuem tendo precedência (pre → user packages → post).
+
+- [x] **Card 04 — Provisionar Fallbacks e Schemas de Zero-Config:**
+  * Adapters tratam graceful degradation: se o host do plugin falhar por ausência de diretório ou schema não provisionado, a falha é reportada como defeito de ativação (`Effect.die` capturado) sem derrubar o boot do OpenCode CLI.
+  * Validações de integridade e ausência de arquivo de configuração cobertas pela suíte `packages/core/test/builtin-zero-config.test.ts`.
+
+- [x] **Card 05 — Testes E2E de Cold-Start em Modo Offline (Quality Gate Clara):**
+  * Suíte real anti-mock em `packages/core/test/builtin-cold-start-offline.test.ts` e `test/builtin-zero-config.test.ts`.
+  * 11 testes reais executados e aprovados (126 asserções em 1.1s).
+  * Validado isolamento sem rede, sem dependência de registry npm externo e com banco SQLite efêmero.
+
+- [x] **Card 06 — Script de Sincronização e Bump Automatizado (`scripts/sync-plugins.sh`):**
+  * Script automatizado com `chmod +x` e symlink `script/sync-plugins.sh`.
+  * Suporte a `--dry-run`, `--check` (modo auditoria/CI), `--ensemble <ref>` e `--dreams <ref>`.
+  * Fluxo integrado: inspeciona upstream remoto via `git ls-remote`, atualiza `packages/core/package.json`, atualiza `bun.lock` e roda testes de validação determinísticos.

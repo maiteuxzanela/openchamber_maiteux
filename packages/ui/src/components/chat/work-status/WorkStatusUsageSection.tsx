@@ -49,6 +49,7 @@ export const WorkStatusUsageSection: React.FC = () => {
   const isInitialized = useConfigStore((state) => state.isInitialized);
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
   const currentProviderId = useConfigStore((state) => state.currentProviderId);
+  const currentModelId = useConfigStore((state) => state.currentModelId);
 
   // Keeps the periodic refresh running while the panel is mounted.
   useQuotaAutoRefresh();
@@ -81,7 +82,7 @@ export const WorkStatusUsageSection: React.FC = () => {
   // lands — paired with any reported weekly cycle quota.
   // With no match it falls back to the display-mode label rather than
   // showing some other provider's quota as if it were the active one.
-  const headline = pickUsageHeadline(groups, currentProviderId);
+  const headline = pickUsageHeadline(groups, currentProviderId, currentModelId);
   const primaryRow = headline?.row;
   const secondaryRow = headline?.secondaryRow;
 

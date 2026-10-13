@@ -73,6 +73,15 @@ export const resolveAntigravityAuth = () => {
       const account = accounts[index] ?? accounts[0];
       if (account?.refreshToken) {
         const refreshParts = parseGoogleRefreshToken(account.refreshToken);
+        const familyIndex = typeof data?.activeIndexByFamily?.gemini === 'number'
+          ? data.activeIndexByFamily.gemini
+          : index;
+        const familyAccount = accounts[familyIndex] ?? account;
+        const cachedQuota = asObject(account.cachedQuota)
+          ?? asObject(familyAccount?.cachedQuota)
+          ?? accounts.find((a) => a?.cachedQuota)?.cachedQuota
+          ?? null;
+
         return {
           sourceId: 'antigravity',
           sourceLabel: 'Antigravity',
@@ -82,7 +91,7 @@ export const resolveAntigravityAuth = () => {
             ?? refreshParts.projectId
             ?? refreshParts.managedProjectId,
           email: account.email,
-          cachedQuota: asObject(account.cachedQuota) ?? null
+          cachedQuota: asObject(cachedQuota) ?? null
         };
       }
     }

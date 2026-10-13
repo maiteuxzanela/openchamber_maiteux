@@ -1,4 +1,5 @@
 import type { UsageProviderGroup, UsageLimitRow } from '@/components/usage/usageGroups';
+import { useConfigStore } from '@/stores/useConfigStore';
 
 /**
  * Picking the quota headlines worth showing while the Usage section is collapsed.
@@ -63,6 +64,103 @@ export const isWeeklyWindowRow = (row: UsageLimitRow): boolean => {
   return false;
 };
 
+/**
+ * Estimates window duration in seconds for sorting purposes when windowSeconds is missing or non-finite.
+ */
+export const estimateWindowSeconds = (row: UsageLimitRow): number => {
+  const seconds = row.window?.windowSeconds;
+  if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0) {
+    return seconds;
+  }
+  const key = (row.key ?? '').toLowerCase();
+  const label = (row.label ?? '').toLowerCase();
+
+  if (key.includes('5h') || label.includes('5-hour') || label.includes('5h')) {
+    return 5 * 3600;
+  }
+  if (key.includes('daily') || label.includes('daily') || label.includes('diária') || label.includes('diaria')) {
+    return 24 * 3600;
+  }
+  if (isWeeklyWindowRow(row)) {
+    return 7 * 24 * 3600;
+  }
+  if (key.includes('monthly') || label.includes('monthly') || label.includes('mensal')) {
+    return 30 * 24 * 3600;
+  }
+  return Number.POSITIVE_INFINITY;
+};
+
+/**
+ * Checks whether a usage limit row matches an active model identifier.
+ * Prevents non-gemini model quotas (e.g. Claude Opus/Sonnet 98% used) from leaking into Gemini sessions.
+ */
+export const rowMatchesModel = (row: UsageLimitRow, modelId: string | null | undefined): boolean => {
+  if (!modelId) return true;
+  const rawModel = modelId.trim().toLowerCase();
+  if (!rawModel) return true;
+
+  // Strip provider prefixes (e.g. 'google/gemini-2.5-flash' -> 'gemini-2.5-flash')
+  const modelName = rawModel.includes('/') ? rawModel.split('/')[1] : rawModel;
+
+  const rowSubtitle = (row.subtitle ?? '').trim().toLowerCase();
+  const rowKey = (row.key ?? '').trim().toLowerCase();
+
+  const isTargetGemini = modelName.includes('gemini');
+  const isTargetClaude = modelName.includes('claude');
+
+  // If user is on Gemini, exclude Claude / Opus / Sonnet / GPT rows strictly
+  if (isTargetGemini) {
+    if (
+      rowSubtitle.includes('claude') ||
+      rowSubtitle.includes('opus') ||
+      rowSubtitle.includes('sonnet') ||
+      rowSubtitle.includes('gpt') ||
+      rowKey.includes('claude') ||
+      rowKey.includes('opus') ||
+      rowKey.includes('sonnet') ||
+      rowKey.includes('gpt')
+    ) {
+      return false;
+    }
+    return rowSubtitle.includes('gemini') || rowKey.includes('gemini');
+  }
+
+  // If user is on Claude, exclude Gemini / GPT rows strictly
+  if (isTargetClaude) {
+    if (
+      rowSubtitle.includes('gemini') ||
+      rowSubtitle.includes('gpt') ||
+      rowKey.includes('gemini') ||
+      rowKey.includes('gpt')
+    ) {
+      return false;
+    }
+
+    if (modelName.includes('opus')) {
+      return rowSubtitle.includes('opus') || rowKey.includes('opus');
+    }
+    if (modelName.includes('sonnet')) {
+      return rowSubtitle.includes('sonnet') || rowKey.includes('sonnet');
+    }
+    if (modelName.includes('haiku')) {
+      return rowSubtitle.includes('haiku') || rowKey.includes('haiku');
+    }
+    return rowSubtitle.includes('claude') || rowKey.includes('claude');
+  }
+
+  // General model matching (e.g. 'glm-5', 'gpt-4o')
+  if (rowSubtitle) {
+    if (rowSubtitle === modelName || modelName.includes(rowSubtitle) || rowSubtitle.includes(modelName)) {
+      return true;
+    }
+  }
+  if (rowKey.includes(modelName)) {
+    return true;
+  }
+
+  return false;
+};
+
 export type UsageHeadlinesResult = {
   group: UsageProviderGroup;
   primary: UsageLimitRow;
@@ -82,6 +180,7 @@ export type UsageHeadlineResult = {
 export const pickUsageHeadlines = (
   groups: readonly UsageProviderGroup[],
   modelProviderId: string | null | undefined,
+  activeModelId?: string | null | undefined,
 ): UsageHeadlinesResult | null => {
   const quotaProviderId = resolveQuotaProviderId(modelProviderId);
   if (!quotaProviderId) return null;
@@ -89,29 +188,52 @@ export const pickUsageHeadlines = (
   const group = groups.find((candidate) => normalize(candidate.providerId) === quotaProviderId);
   if (!group || group.rows.length === 0) return null;
 
-  // Provider-level rows only: a model-scoped row describes one model, not the
-  // provider the composer is pointed at.
-  const providerRows = group.rows.filter((row) => !row.subtitle);
-  const rows = providerRows.length > 0 ? providerRows : group.rows;
+  const currentModel = activeModelId !== undefined
+    ? activeModelId
+    : (typeof useConfigStore !== 'undefined' ? useConfigStore.getState?.()?.currentModelId : undefined);
+
+  const providerRows = group.rows.filter((row) => !row.subtitle && !row.key.startsWith('model-'));
+  const modelRows = group.rows.filter((row) => Boolean(row.subtitle || row.key.startsWith('model-')));
+
+  let candidateRows: UsageLimitRow[] = [];
+
+  if (currentModel && currentModel.trim() && modelRows.length > 0) {
+    const matchedModelRows = modelRows.filter((row) => rowMatchesModel(row, currentModel));
+    if (matchedModelRows.length > 0) {
+      candidateRows = matchedModelRows;
+    } else if (providerRows.length > 0) {
+      // Model rows exist but none matched active model (e.g. non-gemini Claude Opus while active is Gemini).
+      // Fall back to clean provider-level rows (e.g. general Google/Gemini quota).
+      candidateRows = providerRows;
+    } else {
+      // Only foreign model rows exist -> strictly do not leak
+      return null;
+    }
+  } else if (providerRows.length > 0) {
+    candidateRows = providerRows;
+  } else {
+    candidateRows = group.rows;
+  }
+
+  if (candidateRows.length === 0) return null;
 
   let best: UsageLimitRow | null = null;
   let bestSeconds = Number.POSITIVE_INFINITY;
-  for (const row of rows) {
-    const seconds = row.window?.windowSeconds;
-    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) continue;
+  for (const row of candidateRows) {
+    const seconds = estimateWindowSeconds(row);
     if (seconds < bestSeconds) {
       best = row;
       bestSeconds = seconds;
     }
   }
 
-  const primary = best ?? rows[0];
+  const primary = best ?? candidateRows[0];
 
   // If the primary row itself is already a weekly window, there is no distinct
   // shorter cycle to pair it with.
   let secondary: UsageLimitRow | null = null;
   if (!isWeeklyWindowRow(primary)) {
-    const candidates = rows.filter((row) => {
+    const candidates = candidateRows.filter((row) => {
       if (row === primary || row.key === primary.key) return false;
       if (primary.subtitle && row.subtitle !== primary.subtitle) return false;
       if (!primary.subtitle && row.subtitle) return false;
@@ -119,7 +241,7 @@ export const pickUsageHeadlines = (
     });
 
     if (candidates.length > 0) {
-      secondary = candidates.find((r) => typeof r.window?.windowSeconds === 'number' && r.window.windowSeconds > 0) ?? candidates[0];
+      secondary = candidates.find((r) => estimateWindowSeconds(r) < Number.POSITIVE_INFINITY) ?? candidates[0];
     }
   }
 
@@ -141,8 +263,9 @@ export const pickUsageHeadlines = (
 export const pickUsageHeadline = (
   groups: readonly UsageProviderGroup[],
   modelProviderId: string | null | undefined,
+  activeModelId?: string | null | undefined,
 ): UsageHeadlineResult | null => {
-  const result = pickUsageHeadlines(groups, modelProviderId);
+  const result = pickUsageHeadlines(groups, modelProviderId, activeModelId);
   if (!result) return null;
   return {
     group: result.group,

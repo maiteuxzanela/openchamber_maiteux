@@ -76,6 +76,19 @@ button,
   line-height: round(1.625em, 1px);
 }
 
+/* Enable native free mouse text selection in agent responses, markdown content, code blocks, and transcripts (WebKitGTK) */
+.markdown-content,
+.markdown-content *:not(button):not([role="button"]),
+.message-content-text,
+.message-content-text *:not(button):not([role="button"]),
+.message-bubble,
+.message-bubble *:not(button):not([role="button"]),
+pre,
+code {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
 /* Native selection uses the theme's selection pair. */
 .message-content-text::selection,
 .message-content-text ::selection,

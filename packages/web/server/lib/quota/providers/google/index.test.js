@@ -58,4 +58,25 @@ describe('Google quota provider', () => {
       expect(result.usage.windows.weekly.windowSeconds).toBe(7 * 24 * 60 * 60);
     }
   });
+
+  it('enriches discovered models with 5h and weekly windows', async () => {
+    const sources = resolveGoogleAuthSources();
+    if (sources.length === 0) return;
+
+    const result = await fetchGoogleQuota();
+    if (!result.ok || !result.usage?.models) return;
+
+    const modelEntries = Object.values(result.usage.models);
+    expect(modelEntries.length).toBeGreaterThan(0);
+
+    for (const model of modelEntries) {
+      expect(model.windows).toBeDefined();
+      if (model.windows['5h']) {
+        expect(typeof model.windows['5h'].usedPercent).toBe('number');
+      }
+      if (model.windows.weekly) {
+        expect(typeof model.windows.weekly.usedPercent).toBe('number');
+      }
+    }
+  });
 });

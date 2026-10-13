@@ -136,12 +136,15 @@ export const transformCachedQuotaWindows = (familyQuota) => {
     const resetAt = toTimestamp(item?.resetTime);
 
     let windowSeconds = null;
-    const windowKey = rawKey === '7d' ? 'weekly' : rawKey;
-    if (windowKey === '5h') {
-      windowSeconds = GOOGLE_FIVE_HOUR_WINDOW_SECONDS;
-    } else if (windowKey === 'weekly') {
+    let windowKey = rawKey;
+    if (rawKey === '7d' || rawKey === 'week' || rawKey === 'weekly') {
+      windowKey = 'weekly';
       windowSeconds = GOOGLE_WEEKLY_WINDOW_SECONDS;
-    } else if (windowKey === 'daily') {
+    } else if (rawKey === '5h' || rawKey === '5-hour') {
+      windowKey = '5h';
+      windowSeconds = GOOGLE_FIVE_HOUR_WINDOW_SECONDS;
+    } else if (rawKey === 'daily' || rawKey === '1d' || rawKey === '24h') {
+      windowKey = 'daily';
       windowSeconds = GOOGLE_DAILY_WINDOW_SECONDS;
     }
 
@@ -152,8 +155,8 @@ export const transformCachedQuotaWindows = (familyQuota) => {
     });
   }
 
-  // Fallback if windows array is absent but top-level remainingFraction exists
-  if (Object.keys(windows).length === 0 && quota.remainingFraction !== undefined) {
+  // Fallback if weekly window is absent in array but top-level remainingFraction exists
+  if (!windows.weekly && quota.remainingFraction !== undefined) {
     const remainingFraction = toNumber(quota.remainingFraction);
     const remainingPercent = remainingFraction !== null
       ? Math.round(remainingFraction * 100)
@@ -180,9 +183,10 @@ export const transformCachedQuotaWindows = (familyQuota) => {
 export const transformCachedQuota = (cachedQuota) => {
   const root = asObject(cachedQuota);
   if (!root) return {};
+  const quota = asObject(root.cachedQuota) ?? root;
 
   const result = {};
-  for (const [familyKey, familyData] of Object.entries(root)) {
+  for (const [familyKey, familyData] of Object.entries(quota)) {
     const familyObj = asObject(familyData);
     if (!familyObj) continue;
     const windows = transformCachedQuotaWindows(familyObj);
@@ -203,7 +207,8 @@ export const transformCachedQuota = (cachedQuota) => {
 export const transformAntigravityProviderWindows = (cachedQuota) => {
   const root = asObject(cachedQuota);
   if (!root) return {};
-  const geminiQuota = asObject(root.gemini) ?? root;
+  const quota = asObject(root.cachedQuota) ?? root;
+  const geminiQuota = asObject(quota.gemini) ?? quota;
   return transformCachedQuotaWindows(geminiQuota);
 };
 
@@ -221,8 +226,9 @@ export const applyCachedQuotaToModels = (models, cachedQuota) => {
     return models;
   }
 
-  const geminiWindows = transformCachedQuotaWindows(root.gemini);
-  const nonGeminiWindows = transformCachedQuotaWindows(root['non-gemini']);
+  const quotaObj = asObject(root.cachedQuota) ?? root;
+  const geminiWindows = transformCachedQuotaWindows(quotaObj.gemini ?? quotaObj);
+  const nonGeminiWindows = transformCachedQuotaWindows(quotaObj['non-gemini']);
 
   for (const [modelName, modelEntry] of Object.entries(models)) {
     if (!modelEntry || typeof modelEntry !== 'object') continue;
@@ -231,11 +237,25 @@ export const applyCachedQuotaToModels = (models, cachedQuota) => {
     const isNonGemini = modelName.includes('claude') || modelName.includes('gpt') || modelName.includes('chat_');
     const sourceWindows = isNonGemini ? nonGeminiWindows : geminiWindows;
 
-    if (sourceWindows?.weekly && !modelEntry.windows.weekly) {
-      modelEntry.windows.weekly = sourceWindows.weekly;
+    if (sourceWindows?.weekly) {
+      if (!modelEntry.windows.weekly) {
+        modelEntry.windows.weekly = sourceWindows.weekly;
+      } else {
+        modelEntry.windows.weekly = {
+          ...sourceWindows.weekly,
+          ...modelEntry.windows.weekly
+        };
+      }
     }
-    if (sourceWindows?.['5h'] && !modelEntry.windows['5h']) {
-      modelEntry.windows['5h'] = sourceWindows['5h'];
+    if (sourceWindows?.['5h']) {
+      if (!modelEntry.windows['5h']) {
+        modelEntry.windows['5h'] = sourceWindows['5h'];
+      } else {
+        modelEntry.windows['5h'] = {
+          ...sourceWindows['5h'],
+          ...modelEntry.windows['5h']
+        };
+      }
     }
   }
 
