@@ -1,26 +1,62 @@
+/**
+ * Deterministic tests for the OpenCode Go quota provider.
+ *
+ * No domain mocks: a real auth.json is written into an isolated temporary
+ * HOME sandbox, and the module is imported dynamically so its load-time
+ * AUTH_FILE path resolves inside that sandbox. Network is exercised through a
+ * real transport recorder at the fetch boundary only.
+ */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-const previousDataDirectory = process.env.OPENCHAMBER_DATA_DIR;
-const temporaryDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-opencode-go-'));
-process.env.OPENCHAMBER_DATA_DIR = temporaryDataDirectory;
+const previousEnv = {
+  HOME: process.env.HOME,
+  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+  OPENCHAMBER_DATA_DIR: process.env.OPENCHAMBER_DATA_DIR,
+};
 
-vi.mock('../../opencode/auth.js', () => ({
-  readAuthFile: () => ({ 'opencode-go': { key: 'test-key' } }),
-}));
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-opencode-go-'));
+process.env.HOME = sandbox;
+process.env.XDG_CONFIG_HOME = sandbox;
+process.env.OPENCHAMBER_DATA_DIR = sandbox;
 
-import { fetchOpenCodeGoUsage, fetchQuota, parseOpenCodeGoUsage } from './opencode-go.js';
+const authPath = path.join(sandbox, '.local', 'share', 'opencode', 'auth.json');
+
+const writeAuth = (payload) => {
+  fs.mkdirSync(path.dirname(authPath), { recursive: true });
+  fs.writeFileSync(authPath, JSON.stringify(payload, null, 2), 'utf8');
+};
+
+const usageBody = () => JSON.stringify({
+  usage: { rolling: { percent: 25, resetsAt: '2026-08-12T12:00:00.000Z' } },
+});
+
+let aliases;
+let fetchOpenCodeGoUsage;
+let fetchQuota;
+let isConfigured;
+let parseOpenCodeGoUsage;
+
+beforeAll(async () => {
+  vi.resetModules();
+  const mod = await import('./opencode-go.js');
+  ({ aliases, fetchOpenCodeGoUsage, fetchQuota, isConfigured, parseOpenCodeGoUsage } = mod);
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  fs.rmSync(authPath, { force: true });
 });
 
 afterAll(() => {
-  if (previousDataDirectory === undefined) delete process.env.OPENCHAMBER_DATA_DIR;
-  else process.env.OPENCHAMBER_DATA_DIR = previousDataDirectory;
-  fs.rmSync(temporaryDataDirectory, { recursive: true, force: true });
+  for (const [key, value] of Object.entries(previousEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  vi.resetModules();
+  fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
 describe('OpenCode Go quota provider', () => {
@@ -78,14 +114,77 @@ describe('OpenCode Go quota provider', () => {
   });
 
   it('reads the API key from the OpenCode auth file', async () => {
-    const legacyPath = path.join(temporaryDataDirectory, 'quota', 'opencode-go.json');
+    writeAuth({ 'opencode-go': { key: 'test-key' } });
+    const legacyPath = path.join(sandbox, 'quota', 'opencode-go.json');
     fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
     fs.writeFileSync(legacyPath, '{not valid json', { mode: 0o600 });
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ usage: { rolling: { percent: 25, resetsAt: '2026-08-12T12:00:00.000Z' } } })));
-    vi.stubGlobal('fetch', fetchMock);
+    const calls = [];
+    vi.stubGlobal('fetch', async (url, options) => {
+      calls.push({ url, options });
+      return new Response(usageBody());
+    });
     const result = await fetchQuota();
     expect(result).toMatchObject({ providerId: 'opencode-go', ok: true, configured: true });
-    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-key');
+    expect(calls[0].options.headers.Authorization).toBe('Bearer test-key');
     expect(fs.existsSync(legacyPath)).toBe(false);
+  });
+
+  it('declares both the opencode and opencode-go aliases', () => {
+    expect(aliases).toEqual(['opencode', 'opencode-go']);
+  });
+
+  it('recognizes the opencode alias in auth.json', async () => {
+    writeAuth({ opencode: { key: 'alias-key' } });
+    expect(isConfigured()).toBe(true);
+
+    const calls = [];
+    vi.stubGlobal('fetch', async (url, options) => {
+      calls.push({ url, options });
+      return new Response(usageBody());
+    });
+    const result = await fetchQuota();
+    expect(result).toMatchObject({ providerId: 'opencode-go', ok: true, configured: true });
+    expect(calls[0].options.headers.Authorization).toBe('Bearer alias-key');
+  });
+
+  it('prefers the opencode alias over opencode-go when both are present', async () => {
+    writeAuth({ 'opencode-go': { key: 'go-key' }, opencode: { key: 'alias-key' } });
+    expect(isConfigured()).toBe(true);
+
+    const calls = [];
+    vi.stubGlobal('fetch', async (url, options) => {
+      calls.push({ url, options });
+      return new Response(usageBody());
+    });
+    await fetchQuota();
+    expect(calls[0].options.headers.Authorization).toBe('Bearer alias-key');
+  });
+
+  it('accepts a raw string token entry under the opencode alias', async () => {
+    writeAuth({ opencode: 'raw-token' });
+    expect(isConfigured()).toBe(true);
+
+    const calls = [];
+    vi.stubGlobal('fetch', async (url, options) => {
+      calls.push({ url, options });
+      return new Response(usageBody());
+    });
+    await fetchQuota();
+    expect(calls[0].options.headers.Authorization).toBe('Bearer raw-token');
+  });
+
+  it('reports unconfigured when neither alias is present', async () => {
+    writeAuth({ anthropic: { key: 'unrelated' } });
+    expect(isConfigured()).toBe(false);
+
+    const calls = [];
+    vi.stubGlobal('fetch', async (url, options) => {
+      calls.push({ url, options });
+      return new Response(usageBody());
+    });
+    const result = await fetchQuota();
+    expect(result).toMatchObject({ providerId: 'opencode-go', ok: false, configured: false });
+    expect(result.error).toBe('Not configured');
+    expect(calls).toHaveLength(0);
   });
 });

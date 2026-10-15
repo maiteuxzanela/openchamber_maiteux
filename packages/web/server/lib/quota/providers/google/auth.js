@@ -69,16 +69,18 @@ export const resolveAntigravityAuth = () => {
     const data = readJsonFile(filePath);
     const accounts = data?.accounts;
     if (Array.isArray(accounts) && accounts.length > 0) {
-      const index = typeof data.activeIndex === 'number' ? data.activeIndex : 0;
-      const account = accounts[index] ?? accounts[0];
+      const targetIndex = typeof data?.activeIndexByFamily?.gemini === 'number'
+        ? data.activeIndexByFamily.gemini
+        : (typeof data.activeIndex === 'number' ? data.activeIndex : 0);
+      const primaryAccount = accounts[targetIndex] ?? accounts[0];
+      // Fall back to the first account that actually carries a refresh token
+      // when the Gemini-family target account has none.
+      const account = primaryAccount?.refreshToken
+        ? primaryAccount
+        : (accounts.find((a) => a?.refreshToken) ?? primaryAccount);
       if (account?.refreshToken) {
         const refreshParts = parseGoogleRefreshToken(account.refreshToken);
-        const familyIndex = typeof data?.activeIndexByFamily?.gemini === 'number'
-          ? data.activeIndexByFamily.gemini
-          : index;
-        const familyAccount = accounts[familyIndex] ?? account;
         const cachedQuota = asObject(account.cachedQuota)
-          ?? asObject(familyAccount?.cachedQuota)
           ?? accounts.find((a) => a?.cachedQuota)?.cachedQuota
           ?? null;
 
