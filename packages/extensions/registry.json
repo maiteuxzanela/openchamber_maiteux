@@ -1,4 +1,14 @@
 {
   "version": 1,
-  "extensions": []
+  "extensions": [
+    {
+      "id": "openchamber-builtin-kanban",
+      "directory": "kanban",
+      "files": ["panel/index.html", "panel/style.css"],
+      "build": [
+        { "entry": "src/panel/main.ts", "out": "panel/main.js", "target": "browser" },
+        { "entry": "src/service/main.ts", "out": "service/main.js", "target": "node" }
+      ]
+    }
+  ]
 }

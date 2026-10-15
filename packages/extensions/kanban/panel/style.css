@@ -1,0 +1,695 @@
+/* Kanban panel — theme-driven, responsive (rail 300–420px and full-screen page).
+   Colours come from the host through `applyHostReady` (--oc-* CSS variables set
+   on <html>). Every token has a neutral fallback so the panel still renders if
+   a token is unavailable. */
+
+:root {
+  --kb-radius: var(--oc-radius, 8px);
+  --kb-gap: 10px;
+  --kb-pad: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--oc-bg, #1e1e1e);
+  color: var(--oc-fg, #e6e6e6);
+  font-family: var(--oc-font, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  overflow: hidden;
+}
+
+.kb-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--oc-bg, #1e1e1e);
+  color: var(--oc-fg, #e6e6e6);
+}
+
+/* ---------- Top bar ---------- */
+
+.kb-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--kb-gap);
+  padding: var(--kb-pad) var(--kb-pad) 8px;
+  border-bottom: 1px solid var(--oc-border, #333);
+  flex: 0 0 auto;
+}
+
+.kb-heading {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.kb-heading h1 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--oc-fg, #e6e6e6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kb-heading-sub {
+  color: var(--oc-muted, #9a9a9a);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kb-refresh {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* WCAG 2.5.5: comfortable pointer target (>=36x36px). */
+  min-width: 36px;
+  min-height: 36px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--kb-radius);
+  border: 1px solid var(--oc-border, #333);
+  background: var(--oc-elevated, #262626);
+  color: var(--oc-elevated-fg, var(--oc-fg, #e6e6e6));
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.kb-refresh:hover {
+  background: var(--oc-hover, #303030);
+}
+
+.kb-refresh:focus-visible {
+  outline: 2px solid var(--oc-focus, #4c8dff);
+  outline-offset: 1px;
+}
+
+.kb-refresh[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.kb-refresh[disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* ---------- Tabs ---------- */
+
+.kb-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  /* Bottom padding reserves a dedicated lane for the horizontal scrollbar so it
+     can never overlap the tab labels or the active tab's bottom border. */
+  padding: 6px var(--kb-pad) 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--oc-muted, #9a9a9a) 45%, transparent) transparent;
+  border-bottom: 1px solid var(--oc-border, #333);
+  flex: 0 0 auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Thin, unobtrusive Scrollbar (Chromium/WebKit) that stays below the tabs. */
+.kb-tabs::-webkit-scrollbar {
+  height: 5px;
+}
+
+.kb-tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.kb-tabs::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--oc-muted, #9a9a9a) 45%, transparent);
+  border-radius: 999px;
+}
+
+.kb-tabs::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--oc-muted, #9a9a9a) 70%, transparent);
+}
+
+.kb-tab {
+  flex: 0 0 auto;
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--oc-muted, #9a9a9a);
+  font: inherit;
+  font-size: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: var(--kb-radius) var(--kb-radius) 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.kb-tab:hover {
+  color: var(--oc-fg, #e6e6e6);
+  background: var(--oc-hover, #303030);
+}
+
+.kb-tab:focus-visible {
+  outline: 2px solid var(--oc-focus, #4c8dff);
+  outline-offset: -2px;
+}
+
+.kb-tab[aria-selected="true"] {
+  color: var(--oc-fg, #e6e6e6);
+  background: var(--oc-elevated, #262626);
+  border-color: var(--oc-border, #333);
+  font-weight: 600;
+}
+
+.kb-tab-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--oc-muted-surface, #333);
+  color: var(--oc-muted, #9a9a9a);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.kb-tab[aria-selected="true"] .kb-tab-count {
+  background: var(--oc-selection, #33415c);
+  color: var(--oc-selection-fg, var(--oc-fg, #e6e6e6));
+}
+
+/* ---------- Banner / feedback ---------- */
+
+.kb-banner {
+  flex: 0 0 auto;
+  margin: 8px var(--kb-pad) 0;
+  padding: 9px 11px;
+  border-radius: var(--kb-radius);
+  border: 1px solid var(--oc-error, #a33);
+  background: color-mix(in srgb, var(--oc-error, #a33) 16%, transparent);
+  color: var(--oc-error-text, #ff8a8a);
+  font-size: 0.78rem;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.kb-banner[hidden] {
+  display: none;
+}
+
+.kb-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.kb-banner-retry {
+  flex: 0 0 auto;
+  appearance: none;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.kb-banner-retry:hover {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+/* ---------- Scroll region ---------- */
+
+.kb-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--kb-pad);
+  scrollbar-width: thin;
+}
+
+.kb-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kb-gap);
+}
+
+.kb-separator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 10px;
+  color: var(--oc-muted, #9a9a9a);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.kb-separator[hidden] {
+  display: none;
+}
+
+.kb-separator::before,
+.kb-separator::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--oc-border, #333);
+}
+
+.kb-empty {
+  margin: 24px auto;
+  max-width: 320px;
+  text-align: center;
+  color: var(--oc-muted, #9a9a9a);
+  font-size: 0.82rem;
+}
+
+.kb-empty[hidden] {
+  display: none;
+}
+
+.kb-empty strong {
+  display: block;
+  color: var(--oc-fg, #e6e6e6);
+  font-size: 0.9rem;
+  margin-bottom: 4px;
+}
+
+/* ---------- Card (accordion) ---------- */
+
+.kb-card {
+  border: 1px solid var(--oc-border, #333);
+  border-radius: var(--kb-radius);
+  background: var(--oc-elevated, #262626);
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.kb-card:hover {
+  border-color: var(--oc-focus, #4c8dff);
+}
+
+.kb-card--expanded {
+  border-color: var(--oc-focus, #4c8dff);
+  box-shadow: 0 1px 0 0 var(--oc-border, #333);
+}
+
+.kb-card[data-status="done"] {
+  opacity: 0.82;
+}
+
+.kb-card-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 11px;
+  cursor: pointer;
+}
+
+.kb-card-head:hover {
+  background: var(--oc-hover, #303030);
+}
+
+.kb-card-head:focus-visible {
+  outline: 2px solid var(--oc-focus, #4c8dff);
+  outline-offset: -2px;
+}
+
+.kb-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* WCAG 2.5.5: interactive hit target >=44x44px without changing the visual
+     track size (34x20px) — the extra area is transparent/clickable padding. */
+  min-width: 44px;
+  min-height: 44px;
+  /* Invisible hit area: negative margins keep the original 34x20 visual box and
+     card rhythm intact while the clickable region expands to 44x44px. */
+  margin: -10px -5px;
+  cursor: pointer;
+}
+
+.kb-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  margin: 0;
+  pointer-events: none;
+}
+
+.kb-switch-track {
+  position: relative;
+  display: block;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--oc-border, #4a4a4a);
+  transition: background 0.15s ease;
+}
+
+.kb-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--oc-elevated-fg, #fff);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transition: transform 0.15s ease;
+}
+
+.kb-switch input:checked + .kb-switch-track {
+  background: var(--oc-success, #2ea043);
+}
+
+.kb-switch input:checked + .kb-switch-track::after {
+  transform: translateX(14px);
+}
+
+.kb-switch input:focus-visible + .kb-switch-track {
+  outline: 2px solid var(--oc-focus, #4c8dff);
+  outline-offset: 2px;
+}
+
+.kb-switch input:disabled + .kb-switch-track {
+  opacity: 0.55;
+}
+
+.kb-card-main {
+  min-width: 0;
+}
+
+.kb-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+}
+
+.kb-id {
+  font-family: var(--oc-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  color: var(--oc-muted, #9a9a9a);
+  letter-spacing: 0.02em;
+}
+
+.kb-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  line-height: 1.5;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.kb-badge--open {
+  color: var(--oc-info-text, #8fc7ff);
+  background: color-mix(in srgb, var(--oc-info, #3d7dca) 18%, transparent);
+  border-color: color-mix(in srgb, var(--oc-info, #3d7dca) 40%, transparent);
+}
+
+.kb-badge--done {
+  color: var(--oc-success-text, #79d18a);
+  background: color-mix(in srgb, var(--oc-success, #2ea043) 18%, transparent);
+  border-color: color-mix(in srgb, var(--oc-success, #2ea043) 40%, transparent);
+}
+
+.kb-badge--alta {
+  color: var(--oc-error-text, #ff8a8a);
+  background: color-mix(in srgb, var(--oc-error, #a33) 18%, transparent);
+  border-color: color-mix(in srgb, var(--oc-error, #a33) 40%, transparent);
+}
+
+.kb-badge--media {
+  color: var(--oc-warning-text, #f0c674);
+  background: color-mix(in srgb, var(--oc-warning, #c99a2e) 18%, transparent);
+  border-color: color-mix(in srgb, var(--oc-warning, #c99a2e) 40%, transparent);
+}
+
+.kb-badge--baixa {
+  color: var(--oc-muted, #9a9a9a);
+  background: var(--oc-muted-surface, #333);
+  border-color: var(--oc-border, #333);
+}
+
+.kb-badge--project {
+  color: var(--oc-primary-text, #a9c7ff);
+  background: color-mix(in srgb, var(--oc-primary, #4c8dff) 14%, transparent);
+  border-color: color-mix(in srgb, var(--oc-primary, #4c8dff) 34%, transparent);
+}
+
+.kb-title {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--oc-fg, #e6e6e6);
+  overflow-wrap: anywhere;
+}
+
+.kb-card[data-status="done"] .kb-title {
+  color: var(--oc-muted, #9a9a9a);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--oc-muted, #9a9a9a) 55%, transparent);
+}
+
+.kb-chevron {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--oc-muted, #9a9a9a);
+  border-bottom: 2px solid var(--oc-muted, #9a9a9a);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  margin-left: 2px;
+}
+
+.kb-card--expanded .kb-chevron {
+  transform: rotate(-135deg);
+}
+
+.kb-summary {
+  margin: 0;
+  padding: 0 11px 10px 55px;
+  color: var(--oc-muted, #9a9a9a);
+  font-size: 0.79rem;
+  overflow-wrap: anywhere;
+}
+
+.kb-card-error {
+  margin: 0 11px 10px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--oc-error, #a33);
+  background: color-mix(in srgb, var(--oc-error, #a33) 16%, transparent);
+  color: var(--oc-error-text, #ff8a8a);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Expanded body (markdown) ---------- */
+
+.kb-body {
+  border-top: 1px solid var(--oc-border, #333);
+  padding: 11px 12px 14px;
+  background: var(--oc-bg, #1e1e1e);
+  color: var(--oc-fg, #e6e6e6);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.kb-body > :first-child {
+  margin-top: 0;
+}
+
+.kb-body > :last-child {
+  margin-bottom: 0;
+}
+
+.kb-body h1,
+.kb-body h2,
+.kb-body h3,
+.kb-body h4,
+.kb-body h5,
+.kb-body h6 {
+  margin: 14px 0 6px;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+.kb-body h1 { font-size: 1.05rem; }
+.kb-body h2 { font-size: 0.98rem; }
+.kb-body h3 { font-size: 0.92rem; }
+.kb-body h4,
+.kb-body h5,
+.kb-body h6 { font-size: 0.86rem; color: var(--oc-muted, #9a9a9a); }
+
+.kb-body p {
+  margin: 0 0 9px;
+}
+
+.kb-body ul,
+.kb-body ol {
+  margin: 0 0 9px;
+  padding-left: 1.35em;
+}
+
+.kb-body li {
+  margin: 2px 0;
+}
+
+.kb-body a {
+  color: var(--oc-primary-text, #8fc7ff);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.kb-body code {
+  font-family: var(--oc-mono, ui-monospace, monospace);
+  font-size: 0.86em;
+  background: var(--oc-muted-surface, #333);
+  border: 1px solid var(--oc-border, #333);
+  border-radius: 4px;
+  padding: 0.5px 4px;
+}
+
+.kb-body pre.kb-code {
+  margin: 0 0 10px;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid var(--oc-border, #333);
+  background: var(--oc-muted-surface, #262626);
+  overflow-x: auto;
+}
+
+.kb-body pre.kb-code code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.kb-body blockquote {
+  margin: 0 0 9px;
+  padding: 6px 11px;
+  border-left: 3px solid var(--oc-border, #444);
+  color: var(--oc-muted, #9a9a9a);
+}
+
+.kb-body hr {
+  border: none;
+  border-top: 1px solid var(--oc-border, #333);
+  margin: 12px 0;
+}
+
+.kb-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.kb-body-empty {
+  margin: 0;
+  color: var(--oc-muted, #9a9a9a);
+  font-style: italic;
+}
+
+/* ---------- Full-screen page optimisation ---------- */
+
+html[data-oc-surface="page"] .kb-topbar,
+html[data-oc-surface="page"] .kb-tabs {
+  padding-left: 20px;
+  padding-right: 20px;
+}
+
+html[data-oc-surface="page"] .kb-scroll {
+  padding: 16px 20px 28px;
+}
+
+html[data-oc-surface="page"] .kb-list,
+html[data-oc-surface="page"] .kb-separator,
+html[data-oc-surface="page"] .kb-empty,
+html[data-oc-surface="page"] .kb-banner {
+  max-width: 920px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+html[data-oc-surface="page"] .kb-heading h1 {
+  font-size: 1.05rem;
+}
+
+html[data-oc-surface="page"] .kb-body {
+  font-size: 0.85rem;
+}
+
+/* Wider rail / tablet: a touch more breathing room. */
+@media (min-width: 560px) {
+  :root {
+    --kb-gap: 12px;
+    --kb-pad: 14px;
+  }
+}
+
+/* Very narrow rail: tighten paddings and hide non-essential meta. */
+@media (max-width: 340px) {
+  :root {
+    --kb-pad: 9px;
+    --kb-gap: 8px;
+  }
+
+  .kb-summary {
+    padding-left: 11px;
+  }
+
+  .kb-tab {
+    padding: 6px 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
