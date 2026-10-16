@@ -32,6 +32,7 @@ export const kanbanSchema = z.object({
     version: z.literal(1),
     project: projectIdSchema,
     title: z.string().min(1),
+    instructions: z.string().optional(),
     updated_at: ISO,
   }),
   tickets: z.array(ticketSchema),

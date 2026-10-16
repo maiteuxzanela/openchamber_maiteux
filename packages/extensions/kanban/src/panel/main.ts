@@ -71,6 +71,16 @@ const TAB_ALL = 'todos';
 const ALL_LABEL = 'Todos';
 
 /**
+ * `window` focus fires whenever the iframe regains focus — including the very
+ * first `mousedown` of a click that enters the panel. Reloading on every focus
+ * burned an extra `load()` per tab click and (before tabs were reconciled in
+ * place) destroyed the button between `mousedown` and `mouseup`, cancelling the
+ * `click`. A short cooldown keeps genuine refreshes (returning after a while)
+ * while ignoring focus churn from rapid in-panel clicks.
+ */
+const FOCUS_RELOAD_COOLDOWN_MS = 1000;
+
+/**
  * Canonical project list (CONTRACT_KANBAN.md §3). The service's
  * `GET /api/projects` is authoritative at runtime (order, labels, counts);
  * this mirror only lets the tab bar render while the service is still starting
@@ -351,6 +361,9 @@ const mount = (host: HostClient, root: HTMLElement): void => {
     serviceError: null,
   };
 
+  /** Wall-clock of the last `load()` start; drives the focus cooldown. */
+  let lastLoadStartedAt = 0;
+
   /* ----- skeleton ----- */
 
   const topbar = document.createElement('header');
@@ -379,6 +392,20 @@ const mount = (host: HostClient, root: HTMLElement): void => {
   tabs.className = 'kb-tabs';
   tabs.setAttribute('role', 'tablist');
   tabs.setAttribute('aria-label', 'Projetos');
+
+  // Convert the common vertical mouse wheel into smooth horizontal scrolling of
+  // the tab strip. Horizontal-native gestures (trackpads) fall through untouched
+  // so we never fight a deliberate two-axis scroll.
+  tabs.addEventListener(
+    'wheel',
+    (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+        event.preventDefault();
+        tabs.scrollLeft += event.deltaY;
+      }
+    },
+    { passive: false },
+  );
 
   const banner = document.createElement('div');
   banner.className = 'kb-banner';
@@ -486,6 +513,16 @@ const mount = (host: HostClient, root: HTMLElement): void => {
     track.setAttribute('aria-hidden', 'true');
     toggle.append(input, track);
 
+    // The visual input is 1x1px with `pointer-events: none`, so the physical
+    // click lands on the `<label class="kb-switch">` (44x44 hit area) or its
+    // track — never on the input itself. Without stopping propagation here the
+    // click bubbled to `.kb-card-head`, fired the accordion's `setExpanded` and
+    // re-rendered the card, racing/cancelling the `change` that completes or
+    // reopens the ticket. Keep the `change` listener on the input intact.
+    toggle.addEventListener('click', (event) => event.stopPropagation());
+    toggle.addEventListener('pointerdown', (event) => event.stopPropagation());
+    toggle.addEventListener('mousedown', (event) => event.stopPropagation());
+
     const main = document.createElement('div');
     main.className = 'kb-card-main';
 
@@ -581,6 +618,7 @@ const mount = (host: HostClient, root: HTMLElement): void => {
 
   const load = async (): Promise<void> => {
     if (state.loading) return;
+    lastLoadStartedAt = Date.now();
     state.loading = true;
     state.serviceError = null;
     render();
@@ -661,33 +699,84 @@ const mount = (host: HostClient, root: HTMLElement): void => {
     tickets.filter((ticket) => ticket.status === status).length;
 
   const renderTabs = (tickets: TaggedTicket[]): void => {
-    tabs.textContent = '';
-    for (const item of tabItems()) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'kb-tab';
-      button.setAttribute('role', 'tab');
-      button.setAttribute('aria-selected', String(item.id === state.activeTab));
-      button.tabIndex = item.id === state.activeTab ? 0 : -1;
-      const label = document.createElement('span');
-      label.textContent = item.label;
-      button.append(label);
+    const items = tabItems();
 
-      if (item.id === state.activeTab) {
-        const count = document.createElement('span');
-        count.className = 'kb-tab-count';
-        count.textContent = String(countTicket(tickets, 'open'));
-        button.append(count);
+    // Reconcile in place: never blast `tabs.textContent = ''`. Tearing down and
+    // recreating every button destroyed the node under the cursor between
+    // `mousedown` and `mouseup` (the `focus` handler used to trigger a full
+    // render), which silently cancelled the tab `click`. Existing buttons are
+    // reused and only their visual state is updated.
+    const existing = new Map<string, HTMLButtonElement>();
+    for (const button of Array.from(tabs.querySelectorAll<HTMLButtonElement>('.kb-tab'))) {
+      const id = button.dataset['tabId'];
+      if (id) existing.set(id, button);
+    }
+
+    const wanted = new Set(items.map((item) => item.id));
+    for (const [id, button] of existing) {
+      if (!wanted.has(id)) {
+        button.remove();
+        existing.delete(id);
+      }
+    }
+
+    for (const item of items) {
+      const tabId = item.id;
+      let button = existing.get(tabId);
+      if (!button) {
+        button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'kb-tab';
+        button.setAttribute('role', 'tab');
+        button.dataset['tabId'] = tabId;
+        const label = document.createElement('span');
+        label.className = 'kb-tab-label';
+        label.textContent = item.label;
+        button.append(label);
+        button.addEventListener('click', () => {
+          if (state.activeTab === tabId) return;
+          state.activeTab = tabId;
+          state.serviceError = null;
+          render();
+          void load();
+        });
+        tabs.append(button);
+        existing.set(tabId, button);
+      } else {
+        const label = button.querySelector<HTMLElement>('.kb-tab-label');
+        if (label && label.textContent !== item.label) label.textContent = item.label;
       }
 
-      button.addEventListener('click', () => {
-        if (state.activeTab === item.id) return;
-        state.activeTab = item.id;
-        state.serviceError = null;
-        render();
-        void load();
-      });
-      tabs.append(button);
+      const active = tabId === state.activeTab;
+      button.setAttribute('aria-selected', String(active));
+      button.tabIndex = active ? 0 : -1;
+
+      let count = button.querySelector<HTMLElement>('.kb-tab-count');
+      if (active) {
+        if (!count) {
+          count = document.createElement('span');
+          count.className = 'kb-tab-count';
+          button.append(count);
+        }
+        count.textContent = String(countTicket(tickets, 'open'));
+      } else if (count) {
+        count.remove();
+      }
+    }
+
+    // Only reorder when the sequence actually diverged. `append` on an already
+    // placed node detaches then re-attaches it, which must never happen during
+    // an in-flight click gesture.
+    const currentOrder = Array.from(tabs.children).map((child) => (child as HTMLElement).dataset['tabId']);
+    const wantedOrder = items.map((item) => item.id);
+    const reordered =
+      currentOrder.length !== wantedOrder.length ||
+      currentOrder.some((id, index) => id !== wantedOrder[index]);
+    if (reordered) {
+      for (const item of items) {
+        const button = existing.get(item.id);
+        if (button) tabs.append(button);
+      }
     }
   };
 
@@ -721,6 +810,7 @@ const mount = (host: HostClient, root: HTMLElement): void => {
   const render = (): void => {
     const tickets = visibleTickets();
     const scrollTop = scroll.scrollTop;
+    const scrollLeft = tabs.scrollLeft;
 
     renderTabs(tickets);
     renderList(tickets);
@@ -746,6 +836,10 @@ const mount = (host: HostClient, root: HTMLElement): void => {
 
     root.setAttribute('aria-busy', String(state.loading));
     scroll.scrollTop = scrollTop;
+    // renderTabs() reconciles the strip in place (it does not rebuild buttons),
+    // so the horizontal scroll is usually preserved; restore it defensively so a
+    // data refresh never yanks the active tab out of view.
+    tabs.scrollLeft = scrollLeft;
   };
 
   /* ----- live refresh (CONTRACT_KANBAN.md §2.7) ----- */
@@ -754,6 +848,9 @@ const mount = (host: HostClient, root: HTMLElement): void => {
     if (document.visibilityState === 'visible') void load();
   });
   window.addEventListener('focus', () => {
+    // Guard against focus churn: entering the iframe (first click) fires focus
+    // right before the click, so a rapid refresh here would race the gesture.
+    if (Date.now() - lastLoadStartedAt < FOCUS_RELOAD_COOLDOWN_MS) return;
     void load();
   });
 

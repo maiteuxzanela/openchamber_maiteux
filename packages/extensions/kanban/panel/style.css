@@ -125,6 +125,11 @@ body {
   padding: 6px var(--kb-pad) 8px;
   overflow-x: auto;
   overflow-y: hidden;
+  /* Wheel-driven horizontal scroll is computed in JS (scrollLeft += deltaY);
+     keep scrolling instantaneous and contain chaining so the delta math stays
+     predictable and the page doesn't scroll when the strip hits its edge. */
+  overscroll-behavior-x: contain;
+  scroll-behavior: auto;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--oc-muted, #9a9a9a) 45%, transparent) transparent;
   border-bottom: 1px solid var(--oc-border, #333);
