@@ -18,6 +18,18 @@ import { getClientPlatform, isCapacitorApp } from '@/lib/platform';
 
 declare const __APP_VERSION__: string | undefined;
 
+/**
+ * Absolute kill-switch for automatic update checks (TICKET-HARNESS-30).
+ *
+ * When `true` (the product default) the client never schedules a background
+ * poll, never issues `/api/openchamber/update-check` requests and never flips
+ * `available` to `true`. This removes the sidebar update button and the
+ * visual bump that invited an unwanted update click.
+ *
+ * Both `useUpdatePolling` and `checkForUpdates` honor this flag.
+ */
+export const UPDATE_CHECKS_DISABLED = true;
+
 type UpdateState = {
   checking: boolean;
   available: boolean;
@@ -158,6 +170,10 @@ async function checkForWebUpdates(runtime: ClientRuntime, currentVersion?: strin
     }
 
     const data = await response.json();
+    if (data.disabled === true) {
+      // Server-side kill-switch: honor it and never surface an update.
+      return null;
+    }
     return {
       available: data.available ?? false,
       version: data.version,
@@ -207,6 +223,12 @@ export const useUpdateStore = create<UpdateStore>()((set, get) => ({
   ...initialState,
 
   checkForUpdates: async () => {
+    if (UPDATE_CHECKS_DISABLED) {
+      // Hard-disabled: no network, no dialogs, `available` stays strictly false.
+      set({ checking: false, available: false, downloading: false, downloaded: false, info: null, error: null });
+      return null;
+    }
+
     const runtime = detectRuntimeType();
     if (!runtime) return null;
 

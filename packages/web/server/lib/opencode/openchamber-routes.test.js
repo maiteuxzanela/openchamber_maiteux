@@ -83,7 +83,7 @@ describe('OpenChamber desktop host update route', () => {
       install: vi.fn(async () => ({ available: true, version: '1.17.1' })),
       restart: vi.fn().mockRejectedValueOnce(new Error('Signature rejected')).mockResolvedValue(undefined),
     };
-    const { app } = createApp({ environment: { OPENCHAMBER_RUNTIME: 'desktop' }, desktopUpdater });
+    const { app } = createApp({ environment: { OPENCHAMBER_RUNTIME: 'desktop', OPENCHAMBER_DISABLE_UPDATE_CHECK: '0' }, desktopUpdater });
     const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await request(app).post('/api/openchamber/update-install').expect(200);
@@ -105,7 +105,7 @@ describe('OpenChamber desktop host update route', () => {
   });
 
   it('rejects native checks without a bridge and preserves explicit non-web checks', async () => {
-    const { app } = createApp({ environment: { OPENCHAMBER_RUNTIME: 'desktop' } });
+    const { app } = createApp({ environment: { OPENCHAMBER_RUNTIME: 'desktop', OPENCHAMBER_DISABLE_UPDATE_CHECK: '0' } });
     await request(app).get('/api/openchamber/update-check?appType=web').expect(503, {
       available: false, code: 'DESKTOP_UPDATER_UNAVAILABLE', error: 'The desktop updater is not available.',
     });
@@ -127,6 +127,7 @@ describe('OpenChamber desktop host update route', () => {
     const { app } = createApp({
       environment: {
         OPENCHAMBER_RUNTIME: 'desktop',
+        OPENCHAMBER_DISABLE_UPDATE_CHECK: '0',
       },
       desktopUpdater,
     });
@@ -199,6 +200,127 @@ describe('OpenChamber desktop host update route', () => {
 
     expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
     expect(childProcess.spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenChamber remote update check disable guard', () => {
+  it('answers disabled without contacting GitHub or the NPM registry by default', async () => {
+    const desktopUpdater = { check: vi.fn(), install: vi.fn(), restart: vi.fn() };
+    const { app } = createApp({ desktopUpdater });
+
+    const response = await request(app)
+      .get('/api/openchamber/update-check?appType=web&reportUsage=false')
+      .expect(200, {
+        available: false,
+        currentVersion: '1.24.2',
+        latestVersion: '1.24.2',
+        disabled: true,
+      });
+
+    expect(response.body.disabled).toBe(true);
+    expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
+    expect(desktopUpdater.check).not.toHaveBeenCalled();
+  });
+
+  it('echoes the reported currentVersion as both current and latest when disabled', async () => {
+    const { app } = createApp();
+
+    await request(app)
+      .get('/api/openchamber/update-check?appType=web&currentVersion=1.20.0')
+      .expect(200, {
+        available: false,
+        currentVersion: '1.20.0',
+        latestVersion: '1.20.0',
+        disabled: true,
+      });
+
+    expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('short-circuits the desktop host path when the check is disabled', async () => {
+    const desktopUpdater = { check: vi.fn(), install: vi.fn(), restart: vi.fn() };
+    const { app } = createApp({
+      environment: { OPENCHAMBER_RUNTIME: 'desktop' },
+      desktopUpdater,
+    });
+
+    await request(app)
+      .get('/api/openchamber/update-check?appType=web&reportUsage=false')
+      .expect(200, { available: false, currentVersion: '1.24.2', latestVersion: '1.24.2', disabled: true });
+
+    expect(desktopUpdater.check).not.toHaveBeenCalled();
+    expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('only re-enables the remote check when OPENCHAMBER_DISABLE_UPDATE_CHECK is exactly "0"', async () => {
+    const enabled = createApp({ environment: { OPENCHAMBER_DISABLE_UPDATE_CHECK: '0' } });
+    await request(enabled.app)
+      .get('/api/openchamber/update-check?appType=desktop-electron')
+      .expect(200, { available: true, version: '1.17.1' });
+    expect(packageManager.checkForUpdates).toHaveBeenCalledOnce();
+
+    packageManager.checkForUpdates.mockClear();
+    const otherValue = createApp({ environment: { OPENCHAMBER_DISABLE_UPDATE_CHECK: 'false' } });
+    await request(otherValue.app)
+      .get('/api/openchamber/update-check?appType=desktop-electron')
+      .expect(200, { available: false, currentVersion: '1.24.2', latestVersion: '1.24.2', disabled: true });
+    expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it.each(['false', '1', 'no', 'TRUE', ''])(
+    'keeps the remote check disabled for OPENCHAMBER_DISABLE_UPDATE_CHECK=%j',
+    async (value) => {
+      const desktopUpdater = { check: vi.fn(), install: vi.fn(), restart: vi.fn() };
+      const { app } = createApp({
+        environment: { OPENCHAMBER_DISABLE_UPDATE_CHECK: value, OPENCHAMBER_RUNTIME: 'desktop' },
+        desktopUpdater,
+      });
+
+      await request(app)
+        .get('/api/openchamber/update-check?appType=web&reportUsage=false')
+        .expect(200, { available: false, currentVersion: '1.24.2', latestVersion: '1.24.2', disabled: true });
+
+      expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
+      expect(desktopUpdater.check).not.toHaveBeenCalled();
+      // A disabled answer never reaches for a remote feed nor spawns an installer.
+      expect(childProcess.spawn).not.toHaveBeenCalled();
+      expect(childProcess.spawnSync).not.toHaveBeenCalled();
+    },
+  );
+
+  it('answers disabled before the desktop-updater 503 path even without an updater bridge', async () => {
+    const { app } = createApp({ environment: { OPENCHAMBER_RUNTIME: 'desktop' } });
+
+    const response = await request(app)
+      .get('/api/openchamber/update-check?appType=web&reportUsage=false')
+      .expect(200);
+
+    expect(response.body).toEqual({ available: false, currentVersion: '1.24.2', latestVersion: '1.24.2', disabled: true });
+    expect(response.body.code).toBeUndefined();
+    expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank currentVersion as absent and falls back to the shipped version', async () => {
+    const { app } = createApp();
+
+    await request(app)
+      .get('/api/openchamber/update-check?appType=web&currentVersion=%20%20')
+      .expect(200, { available: false, currentVersion: '1.24.2', latestVersion: '1.24.2', disabled: true });
+
+    expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('reports the reported currentVersion verbatim, never the registry latest, when disabled', async () => {
+    const { app } = createApp();
+    const response = await request(app)
+      .get('/api/openchamber/update-check?appType=desktop-electron&currentVersion=1.23.9')
+      .expect(200);
+
+    expect(response.body.currentVersion).toBe('1.23.9');
+    expect(response.body.latestVersion).toBe('1.23.9');
+    // The registry fixture says a newer version exists; it must be ignored.
+    expect(packageManager.checkForUpdates).not.toHaveBeenCalled();
+    expect(response.body.version).toBeUndefined();
   });
 });
 

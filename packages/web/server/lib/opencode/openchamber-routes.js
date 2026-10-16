@@ -17,6 +17,14 @@ function quotePosixShell(value) {
 }
 
 /**
+ * Remote update checks are disabled by default in the local/production
+ * OpenChamber runtime so a deployed instance never phone-homes to the GitHub
+ * or NPM registry on its own. Operators who explicitly want the legacy check
+ * can opt back in with `OPENCHAMBER_DISABLE_UPDATE_CHECK=0`.
+ */
+const isUpdateCheckDisabled = (environment) => environment?.OPENCHAMBER_DISABLE_UPDATE_CHECK !== '0';
+
+/**
  * `echo` in batch treats `& | < > ( ) ^` as syntax and `%var%` as expansion,
  * so a line of the log preamble is escaped before it becomes an `echo`.
  */
@@ -98,6 +106,18 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
         installId: parseString(req.query.installId),
         reportUsage: parseReportUsage(parseString(req.query.reportUsage)),
       };
+      // Local/self-hosted OpenChamber ships with the remote update check off:
+      // answer immediately without touching the GitHub or NPM registry unless
+      // the operator explicitly opted back in with OPENCHAMBER_DISABLE_UPDATE_CHECK=0.
+      if (isUpdateCheckDisabled(process.env)) {
+        const currentVersion = updateRequest.currentVersion || '1.24.2';
+        return res.json({
+          available: false,
+          currentVersion,
+          latestVersion: currentVersion,
+          disabled: true,
+        });
+      }
       let updateInfo;
       if (process.env.OPENCHAMBER_RUNTIME === 'desktop' && updateRequest.appType === 'web') {
         if (desktopRestartError && req.query.updateStatus === 'true') {

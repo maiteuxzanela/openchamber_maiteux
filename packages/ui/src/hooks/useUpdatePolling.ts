@@ -1,6 +1,6 @@
 import React from 'react';
 
-import { useUpdateStore } from '@/stores/useUpdateStore';
+import { UPDATE_CHECKS_DISABLED, useUpdateStore } from '@/stores/useUpdateStore';
 
 export function useUpdatePolling() {
   const checkForUpdates = useUpdateStore((state) => state.checkForUpdates);
@@ -11,6 +11,11 @@ export function useUpdatePolling() {
   }, [checkForUpdates]);
 
   React.useEffect(() => {
+    // Update checks are disabled by product decision (TICKET-HARNESS-30).
+    // Absolute default is OFF: return immediately so no timer is scheduled and
+    // no background `/api/openchamber/update-check` request is ever fired.
+    if (UPDATE_CHECKS_DISABLED) return;
+
     const initialDelayMs = 3000;
     const defaultIntervalMs = 60 * 60 * 1000;
     const minIntervalMs = 5 * 60 * 1000;

@@ -401,9 +401,10 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     setSettingsDialogOpen(true);
   }, [mobileVariant, setSessionSwitcherOpen, setSettingsDialogOpen]);
 
-  const showSidebarUpdateButton =
-    updateStore.available &&
-    (updateStore.runtimeType === 'desktop' || updateStore.runtimeType === 'web');
+  // Update checks are disabled (TICKET-HARNESS-30): the sidebar update button
+  // is permanently hidden so it never renders in `SidebarFooter` and can never
+  // invite an unwanted update click.
+  const showSidebarUpdateButton = false;
 
   const handleOpenDirectoryDialog = React.useCallback(() => {
     sessionEvents.requestDirectoryDialog();
