@@ -7,12 +7,13 @@
 
 import {
   ANTIGRAVITY_ACCOUNTS_PATHS,
-  readJsonFile,
   getAuthEntry,
   normalizeAuthEntry,
   asObject,
   asNonEmptyString,
-  toTimestamp
+  toTimestamp,
+  loadAntigravityAccounts,
+  resolveAntigravityTargetIndex
 } from '../../utils/index.js';
 import { readAuthFile } from '../../../opencode/auth.js';
 import { parseGoogleRefreshToken } from './transforms.js';
@@ -66,37 +67,39 @@ const resolveGeminiCliAuth = (auth) => {
 
 export const resolveAntigravityAuth = () => {
   for (const filePath of ANTIGRAVITY_ACCOUNTS_PATHS) {
-    const data = readJsonFile(filePath);
-    const accounts = data?.accounts;
-    if (Array.isArray(accounts) && accounts.length > 0) {
-      const targetIndex = typeof data?.activeIndexByFamily?.gemini === 'number'
-        ? data.activeIndexByFamily.gemini
-        : (typeof data.activeIndex === 'number' ? data.activeIndex : 0);
-      const primaryAccount = accounts[targetIndex] ?? accounts[0];
-      // Fall back to the first account that actually carries a refresh token
-      // when the Gemini-family target account has none.
-      const account = primaryAccount?.refreshToken
-        ? primaryAccount
-        : (accounts.find((a) => a?.refreshToken) ?? primaryAccount);
-      if (account?.refreshToken) {
-        const refreshParts = parseGoogleRefreshToken(account.refreshToken);
-        const cachedQuota = asObject(account.cachedQuota)
-          ?? accounts.find((a) => a?.cachedQuota)?.cachedQuota
-          ?? null;
+    const data = loadAntigravityAccounts(filePath);
+    if (!data) continue;
 
-        return {
-          sourceId: 'antigravity',
-          sourceLabel: 'Antigravity',
-          refreshToken: refreshParts.refreshToken,
-          projectId: asNonEmptyString(account.projectId)
-            ?? asNonEmptyString(account.managedProjectId)
-            ?? refreshParts.projectId
-            ?? refreshParts.managedProjectId,
-          email: account.email,
-          cachedQuota: asObject(cachedQuota) ?? null
-        };
-      }
-    }
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    if (accounts.length === 0) continue;
+
+    const targetIndex = resolveAntigravityTargetIndex(data, accounts);
+    const primaryAccount = accounts[targetIndex] ?? accounts[0];
+    // Fall back to the first account that actually carries a refresh token
+    // when the Gemini-family target account has none.
+    const account = primaryAccount?.refreshToken
+      ? primaryAccount
+      : (accounts.find((a) => a?.refreshToken) ?? primaryAccount);
+    if (!account?.refreshToken) continue;
+
+    const refreshParts = parseGoogleRefreshToken(account.refreshToken);
+    const cachedQuota = asObject(account.cachedQuota)
+      ?? accounts.find((a) => a?.cachedQuota)?.cachedQuota
+      ?? null;
+
+    return {
+      sourceId: 'antigravity',
+      sourceLabel: 'Antigravity',
+      accessToken: asNonEmptyString(account.accessToken) ?? undefined,
+      refreshToken: refreshParts.refreshToken,
+      expires: typeof account.expires === 'number' ? account.expires : undefined,
+      projectId: asNonEmptyString(account.projectId)
+        ?? asNonEmptyString(account.managedProjectId)
+        ?? refreshParts.projectId
+        ?? refreshParts.managedProjectId,
+      email: account.email,
+      cachedQuota: asObject(cachedQuota) ?? null
+    };
   }
 
   return null;

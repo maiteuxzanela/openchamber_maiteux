@@ -6,10 +6,10 @@
  */
 
 const GOOGLE_PRIMARY_ENDPOINT = 'https://cloudcode-pa.googleapis.com';
+const GOOGLE_DAILY_ENDPOINT = 'https://daily-cloudcode-pa.googleapis.com';
 
 const GOOGLE_ENDPOINTS = [
-  'https://daily-cloudcode-pa.sandbox.googleapis.com',
-  'https://autopush-cloudcode-pa.sandbox.googleapis.com',
+  GOOGLE_DAILY_ENDPOINT,
   GOOGLE_PRIMARY_ENDPOINT
 ];
 

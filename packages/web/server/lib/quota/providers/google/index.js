@@ -42,61 +42,68 @@ export const fetchGoogleQuota = async () => {
   let providerWindows = {};
 
   for (const source of authSources) {
-    if (source.cachedQuota) {
-      const extracted = transformAntigravityProviderWindows(source.cachedQuota);
-      if (Object.keys(extracted).length > 0) {
-        providerWindows = { ...providerWindows, ...extracted };
+    try {
+      if (source.cachedQuota) {
+        const extracted = transformAntigravityProviderWindows(source.cachedQuota);
+        if (Object.keys(extracted).length > 0) {
+          providerWindows = { ...providerWindows, ...extracted };
+        }
       }
-    }
 
-    const now = Date.now();
-    let accessToken = source.accessToken;
+      const now = Date.now();
+      let accessToken = source.accessToken;
 
-    if (!accessToken || (typeof source.expires === 'number' && source.expires <= now)) {
-      if (!source.refreshToken) {
-        sourceErrors.push(`${source.sourceLabel}: Missing refresh token`);
+      if (!accessToken || (typeof source.expires === 'number' && source.expires <= now)) {
+        if (!source.refreshToken) {
+          sourceErrors.push(`${source.sourceLabel}: Missing refresh token`);
+          continue;
+        }
+        const { clientId, clientSecret } = resolveGoogleOAuthClient(source.sourceId);
+        accessToken = await refreshGoogleAccessToken(source.refreshToken, clientId, clientSecret);
+      }
+
+      if (!accessToken) {
+        sourceErrors.push(`${source.sourceLabel}: Failed to refresh OAuth token`);
         continue;
       }
-      const { clientId, clientSecret } = resolveGoogleOAuthClient(source.sourceId);
-      accessToken = await refreshGoogleAccessToken(source.refreshToken, clientId, clientSecret);
-    }
 
-    if (!accessToken) {
-      sourceErrors.push(`${source.sourceLabel}: Failed to refresh OAuth token`);
-      continue;
-    }
+      const projectId = source.projectId ?? DEFAULT_PROJECT_ID;
+      let mergedAnyModel = false;
 
-    const projectId = source.projectId ?? DEFAULT_PROJECT_ID;
-    let mergedAnyModel = false;
+      if (source.sourceId === 'gemini') {
+        const quotaPayload = await fetchGoogleQuotaBuckets(accessToken, projectId);
+        const buckets = Array.isArray(quotaPayload?.buckets) ? quotaPayload.buckets : [];
 
-    if (source.sourceId === 'gemini') {
-      const quotaPayload = await fetchGoogleQuotaBuckets(accessToken, projectId);
-      const buckets = Array.isArray(quotaPayload?.buckets) ? quotaPayload.buckets : [];
+        for (const bucket of buckets) {
+          const transformed = transformQuotaBucket(bucket, source.sourceId);
+          if (transformed) {
+            Object.assign(models, transformed);
+            mergedAnyModel = true;
+          }
+        }
+      }
 
-      for (const bucket of buckets) {
-        const transformed = transformQuotaBucket(bucket, source.sourceId);
-        if (transformed) {
+      const payload = await fetchGoogleModels(accessToken, projectId);
+      if (payload) {
+        for (const [modelName, modelData] of Object.entries(payload.models ?? {})) {
+          const transformed = transformModelData(modelName, modelData, source.sourceId);
           Object.assign(models, transformed);
           mergedAnyModel = true;
         }
       }
-    }
 
-    const payload = await fetchGoogleModels(accessToken, projectId);
-    if (payload) {
-      for (const [modelName, modelData] of Object.entries(payload.models ?? {})) {
-        const transformed = transformModelData(modelName, modelData, source.sourceId);
-        Object.assign(models, transformed);
-        mergedAnyModel = true;
+      if (source.cachedQuota) {
+        applyCachedQuotaToModels(models, source.cachedQuota);
       }
-    }
 
-    if (source.cachedQuota) {
-      applyCachedQuotaToModels(models, source.cachedQuota);
-    }
-
-    if (!mergedAnyModel) {
-      sourceErrors.push(`${source.sourceLabel}: Failed to fetch models`);
+      if (!mergedAnyModel) {
+        sourceErrors.push(`${source.sourceLabel}: Failed to fetch models`);
+      }
+    } catch (error) {
+      // A failure in one source (e.g. the Gemini CLI OAuth refresh) must never
+      // abort nor mask the remaining sources (e.g. a healthy Antigravity pool).
+      const detail = error instanceof Error ? error.message : 'Request failed';
+      sourceErrors.push(`${source.sourceLabel}: ${detail}`);
     }
   }
 
