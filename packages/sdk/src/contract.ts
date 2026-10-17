@@ -70,7 +70,29 @@ export type GuestSettings = Record<string, string>;
 
 export type GuestRequestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
+/**
+ * What an extension passes to `host.request` / `host.serviceRequest`. A string
+ * `body` is sent as-is; a plain object (or any JSON-serializable value) is
+ * serialized with `JSON.stringify` by the SDK before it reaches the wire,
+ * where the host's schema only accepts strings. A `null` or `undefined` body
+ * is absent on the wire (never the literal string `"null"`). An unserializable
+ * value (circular reference, function, symbol) rejects with `HOST_REJECTED`
+ * immediately instead of hanging until `HOST_TIMEOUT`.
+ */
 export type GuestRequest = {
+  method: GuestRequestMethod;
+  path: string;
+  query?: Record<string, string>;
+  body?: unknown;
+};
+
+/**
+ * What actually crosses the postMessage wire. The host's Zod schema only
+ * accepts a string body, so this is `GuestRequest` after the SDK's body
+ * normalization; the wire types below carry it so the protocol assertions
+ * stay exact.
+ */
+export type GuestRequestWire = {
   method: GuestRequestMethod;
   path: string;
   query?: Record<string, string>;
@@ -584,8 +606,8 @@ export type GuestSessionLinkMessage = GuestCall<'session-link', AttachIssueReque
 export type GuestCloseMessage = GuestCall<'close'>;
 export type GuestOauthStartMessage = GuestCall<'oauth-start'>;
 export type GuestOauthDisconnectMessage = GuestCall<'oauth-disconnect'>;
-export type GuestRequestMessage = GuestCall<'request', GuestRequest>;
-export type GuestServiceRequestMessage = GuestCall<'service-request', GuestRequest>;
+export type GuestRequestMessage = GuestCall<'request', GuestRequestWire>;
+export type GuestServiceRequestMessage = GuestCall<'service-request', GuestRequestWire>;
 export type GuestServiceStatusMessage = GuestCall<'service-status'>;
 export type GuestFileReadMessage = GuestCall<'file-read', FileReadRequest>;
 export type GuestFileWriteMessage = GuestCall<'file-write', FileWriteRequest>;

@@ -184,6 +184,7 @@ export type {
   GuestOpenSurfaceMessage,
   GuestOpenUrlMessage,
   GuestRequest,
+  GuestRequestWire,
   GuestRequestMessage,
   GuestRequestMethod,
   GuestPromptMessage,

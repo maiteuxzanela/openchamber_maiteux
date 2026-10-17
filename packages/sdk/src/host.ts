@@ -10,6 +10,7 @@ import {
   GUEST_GENERATE_PROMPT_MAX,
   GUEST_GENERATE_SYSTEM_MAX,
   GUEST_GENERATE_TIMEOUT_MS,
+  GUEST_REQUEST_BODY_MAX,
   GUEST_REQUEST_TIMEOUT_MS,
   GUEST_RESOLVE_ERROR_MAX,
   isGuestFilePath,
@@ -31,6 +32,7 @@ import {
   type GuestItem,
   type GuestMessage,
   type GuestRequest,
+  type GuestRequestWire,
   type GuestRequestResult,
   type GuestSettings,
   type HostReadyContext,
@@ -187,6 +189,42 @@ const rejectBadPath = (): Promise<never> => Promise.reject(
 const rejectBadFilePath = (): Promise<never> => Promise.reject(
   new HostRequestError('BAD_PATH', `File path must be 1 to ${GUEST_FILE_PATH_MAX} characters without NUL or backslash.`),
 );
+
+/**
+ * The wire schema only accepts a string body, so an object body would be
+ * dropped by the host and the caller would wait out the whole HOST_TIMEOUT.
+ * Normalize here instead: strings pass through, JSON-serializable values are
+ * serialized, and anything the host's schema would still drop (unserializable
+ * value, oversized body) rejects immediately with HOST_REJECTED. A `null`
+ * body is absent on the wire, matching the schema's `z.string().optional()`;
+ * it is never serialized as the literal string "null".
+ */
+const toWireRequest = (payload: GuestRequest): GuestRequestWire => {
+  const wire: GuestRequestWire = { method: payload.method, path: payload.path };
+  if (payload.query !== undefined) {
+    wire.query = payload.query;
+  }
+  if (payload.body === undefined || payload.body === null) {
+    return wire;
+  }
+  if (typeof payload.body === 'string') {
+    wire.body = payload.body;
+  } else {
+    try {
+      wire.body = JSON.stringify(payload.body);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new HostRequestError('HOST_REJECTED', `Request body is not JSON-serializable: ${reason}`);
+    }
+    if (wire.body === undefined) {
+      throw new HostRequestError('HOST_REJECTED', 'Request body must be a string or a JSON-serializable value.');
+    }
+  }
+  if (wire.body.length > GUEST_REQUEST_BODY_MAX) {
+    throw new HostRequestError('HOST_REJECTED', `Request body exceeds ${GUEST_REQUEST_BODY_MAX} characters.`);
+  }
+  return wire;
+};
 
 const nextId = (n: { value: number }): string => {
   n.value += 1;
@@ -652,30 +690,52 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
       type: 'oauth-disconnect',
       id: nextId(ids),
     }),
-    request: (payload) => (isGuestRequestPath(payload.path) ? send({
-      channel: OPENCHAMBER_SDK_CHANNEL,
-      v: OPENCHAMBER_SDK_API_VERSION,
-      type: 'request',
-      id: nextId(ids),
-      payload,
-    }) : rejectBadPath()).then((result) => {
-      if (!isGuestRequestResult(result)) {
-        throw new HostRequestError('HOST_REJECTED', 'Host request result was empty.');
+    request: (payload) => {
+      if (!isGuestRequestPath(payload.path)) {
+        return rejectBadPath();
       }
-      return result;
-    }),
-    serviceRequest: (payload) => (isGuestRequestPath(payload.path) ? send({
-      channel: OPENCHAMBER_SDK_CHANNEL,
-      v: OPENCHAMBER_SDK_API_VERSION,
-      type: 'service-request',
-      id: nextId(ids),
-      payload,
-    }) : rejectBadPath()).then((result) => {
-      if (!isGuestRequestResult(result)) {
-        throw new HostRequestError('HOST_REJECTED', 'Host service request result was empty.');
+      let wire: GuestRequestWire;
+      try {
+        wire = toWireRequest(payload);
+      } catch (error) {
+        return Promise.reject(error);
       }
-      return result;
-    }),
+      return send({
+        channel: OPENCHAMBER_SDK_CHANNEL,
+        v: OPENCHAMBER_SDK_API_VERSION,
+        type: 'request',
+        id: nextId(ids),
+        payload: wire,
+      }).then((result) => {
+        if (!isGuestRequestResult(result)) {
+          throw new HostRequestError('HOST_REJECTED', 'Host request result was empty.');
+        }
+        return result;
+      });
+    },
+    serviceRequest: (payload) => {
+      if (!isGuestRequestPath(payload.path)) {
+        return rejectBadPath();
+      }
+      let wire: GuestRequestWire;
+      try {
+        wire = toWireRequest(payload);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return send({
+        channel: OPENCHAMBER_SDK_CHANNEL,
+        v: OPENCHAMBER_SDK_API_VERSION,
+        type: 'service-request',
+        id: nextId(ids),
+        payload: wire,
+      }).then((result) => {
+        if (!isGuestRequestResult(result)) {
+          throw new HostRequestError('HOST_REJECTED', 'Host service request result was empty.');
+        }
+        return result;
+      });
+    },
     serviceStatus: () => send({
       channel: OPENCHAMBER_SDK_CHANNEL,
       v: OPENCHAMBER_SDK_API_VERSION,
