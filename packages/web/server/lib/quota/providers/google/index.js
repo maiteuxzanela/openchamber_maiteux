@@ -9,12 +9,15 @@ import {
   transformQuotaBucket,
   transformModelData,
   transformAntigravityProviderWindows,
-  applyCachedQuotaToModels
+  applyCachedQuotaToModels,
+  transformUserQuotaSummary,
+  applyFamilyWindowsToModels
 } from './transforms.js';
 import {
   refreshGoogleAccessToken,
   fetchGoogleQuotaBuckets,
-  fetchGoogleModels
+  fetchGoogleModels,
+  fetchGoogleQuotaSummary
 } from './api.js';
 
 export { resolveGoogleAuthSources } from './auth.js';
@@ -40,16 +43,13 @@ export const fetchGoogleQuota = async () => {
   const models = {};
   const sourceErrors = [];
   let providerWindows = {};
+  // Becomes true as soon as a live retrieveUserQuotaSummary payload is applied
+  // for any source. When live data is available it is authoritative and the
+  // stale cachedQuota fallback must not be re-injected.
+  let liveSummaryApplied = false;
 
   for (const source of authSources) {
     try {
-      if (source.cachedQuota) {
-        const extracted = transformAntigravityProviderWindows(source.cachedQuota);
-        if (Object.keys(extracted).length > 0) {
-          providerWindows = { ...providerWindows, ...extracted };
-        }
-      }
-
       const now = Date.now();
       let accessToken = source.accessToken;
 
@@ -69,6 +69,28 @@ export const fetchGoogleQuota = async () => {
 
       const projectId = source.projectId ?? DEFAULT_PROJECT_ID;
       let mergedAnyModel = false;
+
+      // Live grouped quota summary (weekly + 5h long/rolling windows). This is
+      // the only endpoint that carries the Antigravity weekly limit; it is
+      // authoritative when reachable.
+      let liveSummary = null;
+      if (source.sourceId === 'antigravity' || source.sourceId === 'gemini') {
+        const summaryPayload = await fetchGoogleQuotaSummary(accessToken, projectId);
+        if (Array.isArray(summaryPayload?.groups) && summaryPayload.groups.length > 0) {
+          liveSummary = transformUserQuotaSummary(summaryPayload);
+        }
+      }
+
+      // Fall back to the on-disk cachedQuota ONLY while the live summary is
+      // unavailable (e.g. offline / endpoint failure).
+      const liveProviderWindows = liveSummary?.providerWindows ?? null;
+      const hasLiveProviderWindows = Boolean(liveProviderWindows && Object.keys(liveProviderWindows).length);
+      if (!hasLiveProviderWindows && source.cachedQuota) {
+        const extracted = transformAntigravityProviderWindows(source.cachedQuota);
+        if (Object.keys(extracted).length > 0) {
+          providerWindows = { ...providerWindows, ...extracted };
+        }
+      }
 
       if (source.sourceId === 'gemini') {
         const quotaPayload = await fetchGoogleQuotaBuckets(accessToken, projectId);
@@ -92,7 +114,17 @@ export const fetchGoogleQuota = async () => {
         }
       }
 
-      if (source.cachedQuota) {
+      // Merge the live windows last so they override anything derived from the
+      // cached fallback, then enrich the models with the matching family windows
+      // (gemini for Gemini models, non-gemini/3p for Claude/GPT models).
+      if (hasLiveProviderWindows) {
+        providerWindows = { ...providerWindows, ...liveProviderWindows };
+      }
+
+      if (liveSummary) {
+        applyFamilyWindowsToModels(models, liveSummary.familyWindows);
+        liveSummaryApplied = true;
+      } else if (source.cachedQuota) {
         applyCachedQuotaToModels(models, source.cachedQuota);
       }
 
@@ -107,20 +139,24 @@ export const fetchGoogleQuota = async () => {
     }
   }
 
-  // Ensure providerWindows has both 5h and weekly from Antigravity cachedQuota
-  if (!providerWindows['5h'] || !providerWindows.weekly) {
-    const antigravityAuth = resolveAntigravityAuth();
-    if (antigravityAuth?.cachedQuota) {
-      const extracted = transformAntigravityProviderWindows(antigravityAuth.cachedQuota);
-      providerWindows = { ...extracted, ...providerWindows };
+  // Ensure providerWindows has both 5h and weekly from Antigravity cachedQuota.
+  // Skipped entirely once a live summary was applied: stale on-disk values must
+  // never overwrite or fill gaps left by authoritative live data.
+  if (!liveSummaryApplied) {
+    if (!providerWindows['5h'] || !providerWindows.weekly) {
+      const antigravityAuth = resolveAntigravityAuth();
+      if (antigravityAuth?.cachedQuota) {
+        const extracted = transformAntigravityProviderWindows(antigravityAuth.cachedQuota);
+        providerWindows = { ...extracted, ...providerWindows };
+      }
     }
-  }
 
-  // Always ensure all discovered models are enriched with 5h and weekly windows
-  const fallbackCachedQuota = authSources.find((s) => s.cachedQuota)?.cachedQuota
-    ?? resolveAntigravityAuth()?.cachedQuota;
-  if (fallbackCachedQuota) {
-    applyCachedQuotaToModels(models, fallbackCachedQuota);
+    // Always ensure all discovered models are enriched with 5h and weekly windows
+    const fallbackCachedQuota = authSources.find((s) => s.cachedQuota)?.cachedQuota
+      ?? resolveAntigravityAuth()?.cachedQuota;
+    if (fallbackCachedQuota) {
+      applyCachedQuotaToModels(models, fallbackCachedQuota);
+    }
   }
 
   if (!Object.keys(models).length) {

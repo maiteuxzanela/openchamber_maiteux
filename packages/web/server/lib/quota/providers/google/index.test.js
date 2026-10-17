@@ -46,7 +46,24 @@ const SAMPLE_CACHED_QUOTA = {
   }
 };
 
-const writeVersionedStore = () => {
+// A stale on-disk snapshot pinned at 4% remaining usage, the value the live
+// `retrieveUserQuotaSummary` must override.
+const CACHED_QUOTA_AT_FOUR_PERCENT = {
+  gemini: {
+    windows: [
+      { window: '5h', remainingFraction: 0.96, resetTime: '2026-10-10T17:03:21Z' },
+      { window: 'weekly', remainingFraction: 0.96, resetTime: '2026-10-15T15:31:37Z' }
+    ]
+  },
+  'non-gemini': {
+    windows: [
+      { window: '5h', remainingFraction: 1, resetTime: '2026-10-10T18:31:54Z' },
+      { window: 'weekly', remainingFraction: 1, resetTime: '2026-10-17T13:31:54Z' }
+    ]
+  }
+};
+
+const writeVersionedStore = (cachedQuota = SAMPLE_CACHED_QUOTA) => {
   fs.mkdirSync(configDir, { recursive: true });
   fs.mkdirSync(generationDir(), { recursive: true });
   fs.writeFileSync(
@@ -59,7 +76,7 @@ const writeVersionedStore = () => {
     JSON.stringify({
       accounts: [{ id: 'acct-antigravity' }],
       commonAuthPool: {
-        rows: { 'acct-antigravity': { quota: { cachedQuota: SAMPLE_CACHED_QUOTA } } }
+        rows: { 'acct-antigravity': { quota: { cachedQuota } } }
       },
       antigravityRouting: { activeIndex: 0, activeRowByFamily: { gemini: { id: 'acct-antigravity' } } }
     }, null, 2),
@@ -125,6 +142,27 @@ const modelsReply = () => ({
       'gemini-3.8-flash': { quotaInfo: { remainingFraction: 0.5 } },
       'claude-sonnet-5-5': { quotaInfo: { remainingFraction: 1 } }
     }
+  }
+});
+
+const summaryReply = ({ weeklyRemaining = 0.73, fiveHourRemaining = 0.953209 } = {}) => ({
+  body: {
+    groups: [
+      {
+        displayName: 'gemini',
+        buckets: [
+          { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: weeklyRemaining, resetTime: '2026-10-15T15:31:37Z' },
+          { bucketId: 'gemini-5h', window: '5h', remainingFraction: fiveHourRemaining, resetTime: '2026-10-10T17:03:21Z' }
+        ]
+      },
+      {
+        displayName: '3p',
+        buckets: [
+          { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.5, resetTime: '2026-10-17T13:31:54Z' },
+          { bucketId: '3p-5h', window: '5h', remainingFraction: 1, resetTime: '2026-10-10T18:31:54Z' }
+        ]
+      }
+    ]
   }
 });
 
@@ -272,5 +310,143 @@ describe('Google quota provider — deterministic sandbox', () => {
     expect(result.ok).toBe(false);
     expect(result.configured).toBe(false);
     expect(result.error).toBe('Not configured');
+  });
+});
+
+describe('Google quota provider — live retrieveUserQuotaSummary integration', () => {
+  it('uses the live summary windows and ignores a stale 4% cachedQuota', async () => {
+    writeVersionedStore(CACHED_QUOTA_AT_FOUR_PERCENT);
+    const calls = installFetchRecorder((record) => {
+      if (record.url.includes('retrieveUserQuotaSummary')) return summaryReply();
+      if (record.url.includes('fetchAvailableModels')) return modelsReply();
+      if (record.url.includes('retrieveUserQuota')) return { body: { buckets: [] } };
+      return { status: 404 };
+    });
+
+    const mod = await loadIndex();
+    const result = await mod.fetchGoogleQuota();
+
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(calls.some((call) => call.url.includes('retrieveUserQuotaSummary'))).toBe(true);
+
+    // Live gemini-weekly remainingFraction 0.73 -> 27% used, NOT the stale 4%.
+    expect(result.usage.windows.weekly.usedPercent).toBe(27);
+    expect(result.usage.windows.weekly.remainingPercent).toBe(73);
+    expect(result.usage.windows.weekly.windowSeconds).toBe(7 * 24 * 60 * 60);
+    expect(result.usage.windows['5h'].usedPercent).toBe(5);
+    expect(result.usage.windows['5h'].windowSeconds).toBe(5 * 60 * 60);
+
+    // The stale cached 4% must not survive anywhere in the provider windows.
+    expect(result.usage.windows.weekly.usedPercent).not.toBe(4);
+
+    const geminiModel = result.usage.models['antigravity/gemini-3.8-flash'];
+    expect(geminiModel.windows.weekly.usedPercent).toBe(27);
+    expect(geminiModel.windows['5h'].usedPercent).toBe(5);
+
+    // Non-gemini (3p) models take the live 3p family windows.
+    const claudeModel = result.usage.models['antigravity/claude-sonnet-5-5'];
+    expect(claudeModel.windows.weekly.usedPercent).toBe(50);
+    expect(claudeModel.windows['5h'].usedPercent).toBe(0);
+  });
+
+  it('merges a partial daily summary with the primary response and still prefers live over cached', async () => {
+    writeVersionedStore(CACHED_QUOTA_AT_FOUR_PERCENT);
+    const dailySummary = 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
+    const calls = installFetchRecorder((record) => {
+      if (record.url === dailySummary) {
+        // Partial response: only the 3p group, no gemini (issue #499).
+        return {
+          body: {
+            groups: [{
+              displayName: '3p',
+              buckets: [
+                { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.5 },
+                { bucketId: '3p-5h', window: '5h', remainingFraction: 1 }
+              ]
+            }]
+          }
+        };
+      }
+      if (record.url.includes('retrieveUserQuotaSummary')) return summaryReply();
+      if (record.url.includes('fetchAvailableModels')) return modelsReply();
+      return { status: 404 };
+    });
+
+    const mod = await loadIndex();
+    const result = await mod.fetchGoogleQuota();
+
+    expect(calls.filter((call) => call.url.includes('retrieveUserQuotaSummary'))).toHaveLength(2);
+    expect(result.usage.windows.weekly.usedPercent).toBe(27);
+    expect(result.usage.models['antigravity/claude-sonnet-5-5'].windows.weekly.usedPercent).toBe(50);
+  });
+
+  it('preserves the cachedQuota fallback when retrieveUserQuotaSummary is unavailable', async () => {
+    writeVersionedStore(CACHED_QUOTA_AT_FOUR_PERCENT);
+    const calls = installFetchRecorder((record) => {
+      if (record.url.includes('retrieveUserQuotaSummary')) return { status: 500 };
+      if (record.url.includes('fetchAvailableModels')) return modelsReply();
+      if (record.url.includes('retrieveUserQuota')) return { body: { buckets: [] } };
+      return { status: 404 };
+    });
+
+    const mod = await loadIndex();
+    const result = await mod.fetchGoogleQuota();
+
+    expect(result.ok).toBe(true);
+    // Both summary endpoints were attempted before falling back.
+    expect(calls.filter((call) => call.url.includes('retrieveUserQuotaSummary'))).toHaveLength(2);
+    expect(result.usage.windows.weekly.usedPercent).toBe(4);
+    expect(result.usage.windows['5h'].usedPercent).toBe(4);
+
+    const geminiModel = result.usage.models['antigravity/gemini-3.8-flash'];
+    expect(geminiModel.windows.weekly.usedPercent).toBe(4);
+  });
+
+  it('preserves the cachedQuota fallback when the summary transport throws (offline)', async () => {
+    writeVersionedStore(CACHED_QUOTA_AT_FOUR_PERCENT);
+    installFetchRecorder((record) => {
+      if (record.url.includes('retrieveUserQuotaSummary')) throw new Error('offline');
+      if (record.url.includes('fetchAvailableModels')) return modelsReply();
+      return { status: 404 };
+    });
+
+    const mod = await loadIndex();
+    const result = await mod.fetchGoogleQuota();
+
+    expect(result.ok).toBe(true);
+    expect(result.usage.windows.weekly.usedPercent).toBe(4);
+  });
+
+  it('does not backfill a missing live window from the stale cachedQuota (live data is authoritative)', async () => {
+    writeVersionedStore(CACHED_QUOTA_AT_FOUR_PERCENT);
+    installFetchRecorder((record) => {
+      if (record.url.includes('retrieveUserQuotaSummary')) {
+        // Live summary exposes the weekly bucket only; the 5h bucket is absent.
+        return {
+          body: {
+            groups: [{
+              displayName: 'gemini',
+              buckets: [{
+                bucketId: 'gemini-weekly',
+                window: 'weekly',
+                remainingFraction: 0.73,
+                resetTime: '2026-10-15T15:31:37Z'
+              }]
+            }]
+          }
+        };
+      }
+      if (record.url.includes('fetchAvailableModels')) return modelsReply();
+      return { status: 404 };
+    });
+
+    const mod = await loadIndex();
+    const result = await mod.fetchGoogleQuota();
+
+    expect(result.usage.windows.weekly.usedPercent).toBe(27);
+    // The stale cached 5h (4%) must NOT be injected to fill the gap, otherwise
+    // the sidebar could keep showing the frozen 4% marker.
+    expect(result.usage.windows['5h']).toBeUndefined();
   });
 });

@@ -13,8 +13,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   refreshGoogleAccessToken,
   fetchGoogleQuotaBuckets,
-  fetchGoogleModels
+  fetchGoogleModels,
+  fetchGoogleQuotaSummary
 } from './api.js';
+
+const SUMMARY_PATH = '/v1internal:retrieveUserQuotaSummary';
+const DAILY_SUMMARY_URL = `https://daily-cloudcode-pa.googleapis.com${SUMMARY_PATH}`;
+const PRIMARY_SUMMARY_URL = `https://cloudcode-pa.googleapis.com${SUMMARY_PATH}`;
 
 const realFetch = globalThis.fetch;
 
@@ -131,5 +136,131 @@ describe('google provider api.js endpoints', () => {
     installFetchRecorder(() => ({ body: { token_type: 'Bearer' } }));
 
     await expect(refreshGoogleAccessToken('refresh-abc', 'client-id', 'client-secret')).resolves.toBeNull();
+  });
+});
+
+describe('google provider api.js — fetchGoogleQuotaSummary', () => {
+  const geminiGroup = (remainingFraction = 0.73) => ({
+    displayName: 'gemini',
+    buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction }]
+  });
+
+  it('queries the daily endpoint first and returns its groups without touching the primary host', async () => {
+    const calls = installFetchRecorder(() => ({ body: { groups: [geminiGroup()] } }));
+
+    const summary = await fetchGoogleQuotaSummary('access-token', 'project-xyz');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(DAILY_SUMMARY_URL);
+    expect(calls[0].method).toBe('POST');
+    expect(JSON.parse(calls[0].body)).toEqual({ project: 'project-xyz' });
+    expect(summary.groups).toHaveLength(1);
+    expect(summary.groups[0].displayName).toBe('gemini');
+    expect(summary.groups[0].buckets[0].bucketId).toBe('gemini-weekly');
+    expect(summary.groups[0].buckets[0].remainingFraction).toBe(0.73);
+  });
+
+  it('sends an empty body when no project id is provided', async () => {
+    const calls = installFetchRecorder(() => ({ body: { groups: [geminiGroup()] } }));
+
+    await fetchGoogleQuotaSummary('access-token');
+
+    expect(JSON.parse(calls[0].body)).toEqual({});
+  });
+
+  it('falls back to the primary endpoint when the daily endpoint returns a non-ok status', async () => {
+    const calls = installFetchRecorder((_record, attempt) => (
+      attempt === 1 ? { status: 500 } : { body: { groups: [geminiGroup()] } }
+    ));
+
+    const summary = await fetchGoogleQuotaSummary('access-token', 'project-xyz');
+
+    expect(calls.map((call) => call.url)).toEqual([DAILY_SUMMARY_URL, PRIMARY_SUMMARY_URL]);
+    expect(summary.groups).toHaveLength(1);
+    expect(summary.groups[0].buckets[0].bucketId).toBe('gemini-weekly');
+  });
+
+  it('merges groups across endpoints when the daily response omits the gemini group', async () => {
+    const calls = installFetchRecorder((record) => {
+      if (record.url === DAILY_SUMMARY_URL) {
+        return {
+          body: {
+            groups: [{
+              displayName: '3p',
+              buckets: [{ bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.5 }]
+            }]
+          }
+        };
+      }
+      return { body: { groups: [geminiGroup()] } };
+    });
+
+    const summary = await fetchGoogleQuotaSummary('access-token', 'project-xyz');
+
+    expect(calls.map((call) => call.url)).toEqual([DAILY_SUMMARY_URL, PRIMARY_SUMMARY_URL]);
+    const displayNames = summary.groups.map((group) => group.displayName).sort();
+    expect(displayNames).toEqual(['3p', 'gemini']);
+    expect(summary.groups.find((group) => group.displayName === '3p').buckets[0].bucketId).toBe('3p-weekly');
+    expect(summary.groups.find((group) => group.displayName === 'gemini').buckets[0].bucketId).toBe('gemini-weekly');
+  });
+
+  it('keeps the first bucket per bucketId when the same displayName appears on both endpoints', async () => {
+    const calls = installFetchRecorder((record) => {
+      if (record.url === DAILY_SUMMARY_URL) {
+        return {
+          body: {
+            groups: [{
+              displayName: '3p',
+              buckets: [{ bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.5 }]
+            }]
+          }
+        };
+      }
+      return {
+        body: {
+          groups: [
+            {
+              displayName: '3p',
+              buckets: [
+                { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.99 },
+                { bucketId: '3p-5h', window: '5h', remainingFraction: 0.1 }
+              ]
+            },
+            geminiGroup()
+          ]
+        }
+      };
+    });
+
+    const summary = await fetchGoogleQuotaSummary('access-token', 'project-xyz');
+
+    expect(calls.map((call) => call.url)).toEqual([DAILY_SUMMARY_URL, PRIMARY_SUMMARY_URL]);
+    const threeP = summary.groups.find((group) => group.displayName === '3p');
+    expect(threeP.buckets).toHaveLength(2);
+    // The daily bucket (0.5) won over the primary duplicate (0.99).
+    const weekly = threeP.buckets.find((bucket) => bucket.bucketId === '3p-weekly');
+    expect(weekly.remainingFraction).toBe(0.5);
+  });
+
+  it('fails closed (null) without throwing when every endpoint returns a non-ok status', async () => {
+    const calls = installFetchRecorder(() => ({ status: 500 }));
+
+    await expect(fetchGoogleQuotaSummary('access-token', 'project-xyz')).resolves.toBeNull();
+    expect(calls.map((call) => call.url)).toEqual([DAILY_SUMMARY_URL, PRIMARY_SUMMARY_URL]);
+  });
+
+  it('fails closed (null) when the payload carries no groups', async () => {
+    installFetchRecorder(() => ({ body: { groups: [] } }));
+
+    await expect(fetchGoogleQuotaSummary('access-token', null)).resolves.toBeNull();
+  });
+
+  it('fails closed (null) and swallows transport errors thrown by every endpoint', async () => {
+    const calls = installFetchRecorder(() => {
+      throw new Error('network down');
+    });
+
+    await expect(fetchGoogleQuotaSummary('access-token', 'project-xyz')).resolves.toBeNull();
+    expect(calls).toHaveLength(2);
   });
 });
