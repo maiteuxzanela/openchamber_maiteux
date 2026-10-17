@@ -4,8 +4,26 @@ import { z } from 'zod';
 import { PROJECT_IDS, type ProjectId } from './projects.ts';
 
 export const ISO = z.iso.datetime({ offset: true });
-export const STATUS = z.enum(['open', 'done']);
-export const PRIORITY = z.enum(['alta', 'media', 'baixa']);
+
+export const normalizePriority = (val: unknown): unknown => {
+  if (typeof val !== 'string') return val;
+  const clean = val.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (['alta', 'alto', 'high', 'h', 'critica', 'urgente'].includes(clean)) return 'alta';
+  if (['media', 'medio', 'medium', 'med', 'mid', 'm'].includes(clean)) return 'media';
+  if (['baixa', 'baixo', 'low', 'l'].includes(clean)) return 'baixa';
+  return clean;
+};
+
+export const normalizeStatus = (val: unknown): unknown => {
+  if (typeof val !== 'string') return val;
+  const clean = val.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (['done', 'concluido', 'completed', 'closed', 'finalizado'].includes(clean)) return 'done';
+  if (['open', 'aberto', 'pending', 'in_progress', 'todo'].includes(clean)) return 'open';
+  return clean;
+};
+
+export const STATUS = z.preprocess(normalizeStatus, z.enum(['open', 'done']));
+export const PRIORITY = z.preprocess(normalizePriority, z.enum(['alta', 'media', 'baixa']));
 export const projectIdSchema = z.enum(PROJECT_IDS);
 
 export const ticketSchema = z.object({

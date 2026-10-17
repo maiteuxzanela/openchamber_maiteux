@@ -38,7 +38,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { kanbanSchema } from '../src/service/schema.ts';
+import { kanbanSchema, PRIORITY, STATUS, normalizePriority, normalizeStatus, ticketSchema } from '../src/service/schema.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(HERE, '..');
@@ -390,5 +390,65 @@ describe('panel: tabs wheel + scrollLeft behaviour (real bundle in a real DOM)',
     expect(activeTabText(h)).not.toBe(before);
     // ...and the horizontal offset survived it.
     expect(tabs.scrollLeft).toBe(210);
+  });
+});
+
+/* ================================================================== *
+ * (C) Resilient Priority & Status Normalization (Tolerant Formatting)
+ * ================================================================== */
+
+describe('schema: resilient priority normalization', () => {
+  const variationsMedia = ['media', 'Media', 'MEDIA', 'Média', 'média', 'MÉDIA', '  Média  ', 'medio', 'Medio', 'medium', 'Medium', 'med', 'mid'];
+  for (const v of variationsMedia) {
+    test(`normalizes "${v}" to canonical "media"`, () => {
+      expect(PRIORITY.parse(v)).toBe('media');
+    });
+  }
+
+  const variationsAlta = ['alta', 'Alta', 'ALTA', '  Alta  ', 'alto', 'high', 'HIGH', 'critica', 'urgente'];
+  for (const v of variationsAlta) {
+    test(`normalizes "${v}" to canonical "alta"`, () => {
+      expect(PRIORITY.parse(v)).toBe('alta');
+    });
+  }
+
+  const variationsBaixa = ['baixa', 'Baixa', 'BAIXA', '  baixa  ', 'baixo', 'low', 'LOW'];
+  for (const v of variationsBaixa) {
+    test(`normalizes "${v}" to canonical "baixa"`, () => {
+      expect(PRIORITY.parse(v)).toBe('baixa');
+    });
+  }
+
+  test('ticketSchema accepts ticket with priority "Média"', () => {
+    const rawTicket = {
+      id: 'TICKET-TEST-01',
+      title: 'Teste de Tolerância de Grafia',
+      status: 'open',
+      priority: 'Média',
+      summary: 'Resiliência a acentos e maiúsculas',
+      body: 'Corpo do ticket',
+      order: 1,
+      created_at: '2026-10-17T18:00:00-03:00',
+      completed_at: null,
+    };
+    const parsed = ticketSchema.parse(rawTicket);
+    expect(parsed.priority).toBe('media');
+  });
+
+  test('ticketSchema accepts ticket with status "concluído"', () => {
+    const rawTicket = {
+      id: 'TICKET-TEST-02',
+      title: 'Teste de Status Concluído',
+      status: 'concluído',
+      priority: 'Alta',
+      summary: 'Status em português',
+      body: 'Corpo do ticket',
+      order: 2,
+      created_at: '2026-10-17T18:00:00-03:00',
+      completed_at: '2026-10-17T18:30:00-03:00',
+    };
+    const parsed = ticketSchema.parse(rawTicket);
+    expect(parsed.status).toBe('done');
+    expect(parsed.priority).toBe('alta');
   });
 });
