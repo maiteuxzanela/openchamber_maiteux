@@ -34,7 +34,9 @@ const writeAccounts = (payload) => {
 };
 
 const loadResolveAntigravityAuth = async () => {
-  vi.resetModules();
+  if (typeof vi?.resetModules === 'function') {
+    vi.resetModules();
+  }
   const mod = await import('./auth.js');
   return mod.resolveAntigravityAuth;
 };
@@ -51,7 +53,9 @@ afterEach(() => {
   else process.env.HOME = originalEnv.HOME;
   if (originalEnv.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = originalEnv.XDG_CONFIG_HOME;
-  vi.resetModules();
+  if (typeof vi?.resetModules === 'function') {
+    vi.resetModules();
+  }
   fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
