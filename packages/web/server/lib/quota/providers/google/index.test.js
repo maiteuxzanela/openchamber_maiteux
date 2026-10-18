@@ -145,6 +145,17 @@ const modelsReply = () => ({
   }
 });
 
+// Models without quotaInfo: no usable live reading, so only the aggregated
+// windows (cachedQuota / family summary) can fill them.
+const modelsReplyWithoutQuotaInfo = () => ({
+  body: {
+    models: {
+      'gemini-3.8-flash': {},
+      'claude-sonnet-5-5': {}
+    }
+  }
+});
+
 const summaryReply = ({ weeklyRemaining = 0.73, fiveHourRemaining = 0.953209 } = {}) => ({
   body: {
     groups: [
@@ -228,9 +239,12 @@ describe('Google quota provider — deterministic sandbox', () => {
     expect(result.configured).toBe(true);
     expect(result.usage.windows['5h']).toBeDefined();
     expect(result.usage.windows['5h'].windowSeconds).toBe(5 * 60 * 60);
-    expect(result.usage.windows['5h'].usedPercent).toBe(20);
+    // The provider-level 5h derives from the live per-model reading
+    // (remainingFraction 0.5 -> 50% used), not from the cached snapshot (20%).
+    expect(result.usage.windows['5h'].usedPercent).toBe(50);
     expect(result.usage.windows.weekly).toBeDefined();
     expect(result.usage.windows.weekly.windowSeconds).toBe(7 * 24 * 60 * 60);
+    // Weekly has no per-model source, so cachedQuota still supplies it.
     expect(result.usage.windows.weekly.usedPercent).toBe(60);
 
     const geminiModel = result.usage.models['antigravity/gemini-3.8-flash'];
@@ -238,6 +252,23 @@ describe('Google quota provider — deterministic sandbox', () => {
     // 5h from the live model fetch, weekly injected from cachedQuota.
     expect(geminiModel.windows['5h'].usedPercent).toBe(50);
     expect(geminiModel.windows.weekly.usedPercent).toBe(60);
+  });
+
+  it('falls back to the cached provider windows when models report no usable live reading', async () => {
+    writeVersionedStore();
+    installFetchRecorder(() => modelsReplyWithoutQuotaInfo());
+
+    const mod = await loadIndex();
+    const result = await mod.fetchGoogleQuota();
+
+    expect(result.ok).toBe(true);
+    // No model carries a finite 5h reading, so the cached extraction remains
+    // the provider-level source (5h 20% / weekly 60%)...
+    expect(result.usage.windows['5h'].usedPercent).toBe(20);
+    expect(result.usage.windows.weekly.usedPercent).toBe(60);
+    // ...and it also fills the models that reported no quotaInfo.
+    expect(result.usage.models['antigravity/gemini-3.8-flash'].windows['5h'].usedPercent).toBe(20);
+    expect(result.usage.models['antigravity/gemini-3.8-flash'].windows.weekly.usedPercent).toBe(60);
   });
 
   it('a failing Gemini CLI OAuth refresh does not abort nor mask a healthy Antigravity pool', async () => {
@@ -314,7 +345,7 @@ describe('Google quota provider — deterministic sandbox', () => {
 });
 
 describe('Google quota provider — live retrieveUserQuotaSummary integration', () => {
-  it('uses the live summary windows and ignores a stale 4% cachedQuota', async () => {
+  it('uses the live summary weekly plus the live per-model 5h, ignoring a stale 4% cachedQuota', async () => {
     writeVersionedStore(CACHED_QUOTA_AT_FOUR_PERCENT);
     const calls = installFetchRecorder((record) => {
       if (record.url.includes('retrieveUserQuotaSummary')) return summaryReply();
@@ -334,15 +365,21 @@ describe('Google quota provider — live retrieveUserQuotaSummary integration', 
     expect(result.usage.windows.weekly.usedPercent).toBe(27);
     expect(result.usage.windows.weekly.remainingPercent).toBe(73);
     expect(result.usage.windows.weekly.windowSeconds).toBe(7 * 24 * 60 * 60);
-    expect(result.usage.windows['5h'].usedPercent).toBe(5);
+    // The provider-level 5h comes from the live per-model reading (0.5 ->
+    // 50% used), which outranks both the grouped `gemini-5h` bucket (5%) and
+    // the stale cached snapshot (4%).
+    expect(result.usage.windows['5h'].usedPercent).toBe(50);
     expect(result.usage.windows['5h'].windowSeconds).toBe(5 * 60 * 60);
 
     // The stale cached 4% must not survive anywhere in the provider windows.
     expect(result.usage.windows.weekly.usedPercent).not.toBe(4);
+    expect(result.usage.windows['5h'].usedPercent).not.toBe(4);
 
     const geminiModel = result.usage.models['antigravity/gemini-3.8-flash'];
     expect(geminiModel.windows.weekly.usedPercent).toBe(27);
-    expect(geminiModel.windows['5h'].usedPercent).toBe(5);
+    // The live per-model 5h reading is never clobbered by the grouped family
+    // bucket (that overwrite froze the gauge at 0% in production).
+    expect(geminiModel.windows['5h'].usedPercent).toBe(50);
 
     // Non-gemini (3p) models take the live 3p family windows.
     const claudeModel = result.usage.models['antigravity/claude-sonnet-5-5'];
@@ -396,11 +433,17 @@ describe('Google quota provider — live retrieveUserQuotaSummary integration', 
     expect(result.ok).toBe(true);
     // Both summary endpoints were attempted before falling back.
     expect(calls.filter((call) => call.url.includes('retrieveUserQuotaSummary'))).toHaveLength(2);
+    // Weekly has no live source without the summary, so it keeps the cached
+    // fallback (4%)...
     expect(result.usage.windows.weekly.usedPercent).toBe(4);
-    expect(result.usage.windows['5h'].usedPercent).toBe(4);
+    // ...while the provider 5h prefers the live per-model reading (50%) over
+    // the same stale snapshot (4%): fresher data wins, stale data never does.
+    expect(result.usage.windows['5h'].usedPercent).toBe(50);
+    expect(result.usage.windows['5h'].usedPercent).not.toBe(4);
 
     const geminiModel = result.usage.models['antigravity/gemini-3.8-flash'];
     expect(geminiModel.windows.weekly.usedPercent).toBe(4);
+    expect(geminiModel.windows['5h'].usedPercent).toBe(50);
   });
 
   it('preserves the cachedQuota fallback when the summary transport throws (offline)', async () => {
@@ -445,8 +488,87 @@ describe('Google quota provider — live retrieveUserQuotaSummary integration', 
     const result = await mod.fetchGoogleQuota();
 
     expect(result.usage.windows.weekly.usedPercent).toBe(27);
-    // The stale cached 5h (4%) must NOT be injected to fill the gap, otherwise
+    // The summary carries no 5h bucket, but the live per-model reading (50%)
+    // legitimately fills the gap — the stale cached 5h (4%) must NOT, otherwise
     // the sidebar could keep showing the frozen 4% marker.
-    expect(result.usage.windows['5h']).toBeUndefined();
+    expect(result.usage.windows['5h'].usedPercent).toBe(50);
+    expect(result.usage.windows['5h'].usedPercent).not.toBe(4);
+  });
+
+  it('shields live per-model 5h readings from the static gemini-5h = 1.0 stub and derives the provider 5h from the models', async () => {
+    // Production scenario: retrieveUserQuotaSummary replies with a generic
+    // grouped `gemini-5h` bucket pinned at remainingFraction 1.0 (0% used)
+    // while the real Gemini models already report live consumption.
+    writeVersionedStore(CACHED_QUOTA_AT_FOUR_PERCENT);
+    const calls = installFetchRecorder((record) => {
+      if (record.url.includes('retrieveUserQuotaSummary')) {
+        return {
+          body: {
+            groups: [
+              {
+                displayName: 'gemini',
+                buckets: [
+                  { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.7319, resetTime: '2026-10-15T15:31:37Z' },
+                  { bucketId: 'gemini-5h', window: '5h', remainingFraction: 1, resetTime: '2026-10-10T17:03:21Z' }
+                ]
+              },
+              {
+                displayName: '3p',
+                buckets: [
+                  { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.5, resetTime: '2026-10-17T13:31:54Z' },
+                  { bucketId: '3p-5h', window: '5h', remainingFraction: 1, resetTime: '2026-10-10T18:31:54Z' }
+                ]
+              }
+            ]
+          }
+        };
+      }
+      if (record.url.includes('fetchAvailableModels')) {
+        return {
+          body: {
+            models: {
+              'gemini-3.8-flash': { quotaInfo: { remainingFraction: 0.83 } },
+              'gemini-4-pro': { quotaInfo: { remainingFraction: 0.58 } },
+              'claude-sonnet-5-5': { quotaInfo: { remainingFraction: 0.02 } }
+            }
+          }
+        };
+      }
+      return { status: 404 };
+    });
+
+    const mod = await loadIndex();
+    const result = await mod.fetchGoogleQuota();
+
+    expect(calls.some((call) => call.url.includes('retrieveUserQuotaSummary'))).toBe(true);
+    expect(result.ok).toBe(true);
+
+    const geminiFlash = result.usage.models['antigravity/gemini-3.8-flash'];
+    const geminiPro = result.usage.models['antigravity/gemini-4-pro'];
+    const claude = result.usage.models['antigravity/claude-sonnet-5-5'];
+
+    // Per-model live 5h readings survive the family merge untouched — they are
+    // never overwritten by the 0%-used grouped bucket.
+    expect(geminiFlash.windows['5h'].usedPercent).toBe(17);
+    expect(geminiPro.windows['5h'].usedPercent).toBe(42);
+    // Weekly still syncs from the live summary (0.7319 -> 27% used).
+    expect(geminiFlash.windows.weekly.usedPercent).toBe(27);
+    expect(geminiPro.windows.weekly.usedPercent).toBe(27);
+
+    // Provider-level 5h derives from the most-consumed Gemini model (42%),
+    // not from the static 1.0 stub (0%) nor the stale cached snapshot (4%).
+    expect(result.usage.windows['5h'].usedPercent).toBe(42);
+    expect(result.usage.windows['5h'].windowSeconds).toBe(5 * 60 * 60);
+    expect(result.usage.windows['5h'].usedPercent).not.toBe(0);
+    expect(result.usage.windows['5h']).not.toBe(geminiPro.windows['5h']);
+    // Provider weekly keeps coming from the live summary.
+    expect(result.usage.windows.weekly.usedPercent).toBe(27);
+
+    // Non-gemini (3p) models are excluded from the provider 5h derivation even
+    // while heavily consumed; they keep their own live reading instead of the
+    // 3p family aggregate.
+    expect(claude.windows['5h'].usedPercent).toBe(98);
+    expect(claude.windows.weekly.usedPercent).toBe(50);
+    expect(result.usage.windows['5h'].usedPercent).not.toBe(98);
   });
 });

@@ -11,7 +11,8 @@ import {
   transformAntigravityProviderWindows,
   applyCachedQuotaToModels,
   transformUserQuotaSummary,
-  applyFamilyWindowsToModels
+  applyFamilyWindowsToModels,
+  deriveGeminiFiveHourWindow
 } from './transforms.js';
 import {
   refreshGoogleAccessToken,
@@ -122,6 +123,10 @@ export const fetchGoogleQuota = async () => {
       }
 
       if (liveSummary) {
+        // Enrich every model with the live family windows (weekly for all, 5h
+        // only where the model has no dynamic per-model reading of its own —
+        // see applyFamilyWindowsToModels, which shields live model quotas from
+        // the generic grouped buckets such as `gemini-5h` = 1.0).
         applyFamilyWindowsToModels(models, liveSummary.familyWindows);
         liveSummaryApplied = true;
       } else if (source.cachedQuota) {
@@ -167,6 +172,17 @@ export const fetchGoogleQuota = async () => {
       configured: true,
       error: sourceErrors[0] ?? 'Failed to fetch models'
     });
+  }
+
+  // Provider-level 5h comes from the live Gemini model readings themselves
+  // (most-consumed model wins), not from the grouped `gemini-5h` bucket of
+  // retrieveUserQuotaSummary or the on-disk cachedQuota: that aggregate can sit
+  // at remainingFraction 1.0 (0% used) while the real models already report
+  // consumption, freezing the gauge at 0%. Weekly has no per-model source, so
+  // it keeps coming from the live summary (or the cached fallback).
+  const liveGeminiFiveHour = deriveGeminiFiveHourWindow(models);
+  if (liveGeminiFiveHour) {
+    providerWindows = { ...providerWindows, '5h': liveGeminiFiveHour };
   }
 
   return buildResult({

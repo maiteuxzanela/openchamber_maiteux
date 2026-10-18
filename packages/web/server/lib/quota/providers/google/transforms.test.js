@@ -8,7 +8,8 @@ import {
   transformQuotaBucket,
   transformModelData,
   transformUserQuotaSummary,
-  applyFamilyWindowsToModels
+  applyFamilyWindowsToModels,
+  deriveGeminiFiveHourWindow
 } from './transforms.js';
 
 describe('Google / Antigravity transforms', () => {
@@ -350,5 +351,117 @@ describe('Google — applyFamilyWindowsToModels', () => {
     const models = { 'antigravity/gemini-3.8-flash': {} };
     expect(applyFamilyWindowsToModels(models, null)).toBe(models);
     expect(applyFamilyWindowsToModels(null, {})).toBeNull();
+  });
+});
+
+describe('Google — dynamic per-model readings (fetchGoogleModels / retrieveUserQuota)', () => {
+  const STATIC_GEMINI_STUB_SUMMARY = {
+    groups: [
+      {
+        displayName: 'gemini',
+        buckets: [
+          { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.7319 },
+          // The production stub: a generic grouped bucket pinned at 1.0 (0% used).
+          { bucketId: 'gemini-5h', window: '5h', remainingFraction: 1 }
+        ]
+      },
+      {
+        displayName: '3p',
+        buckets: [
+          { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.5 },
+          { bucketId: '3p-5h', window: '5h', remainingFraction: 1 }
+        ]
+      }
+    ]
+  };
+
+  it('flags usable per-model readings as dynamic and leaves unreadable ones plain', () => {
+    const usable = transformModelData('gemini-3.8-flash', { quotaInfo: { remainingFraction: 0.83 } }, 'antigravity');
+    expect(usable['antigravity/gemini-3.8-flash'].windows['5h'].usedPercent).toBe(17);
+    expect(usable['antigravity/gemini-3.8-flash'].windows['5h'].dynamic).toBe(true);
+
+    const unreadable = transformModelData('gemini-3.8-flash', {}, 'antigravity');
+    expect(unreadable['antigravity/gemini-3.8-flash'].windows['5h'].usedPercent).toBeNull();
+    expect(unreadable['antigravity/gemini-3.8-flash'].windows['5h'].dynamic).toBeUndefined();
+
+    const bucket = transformQuotaBucket({ modelId: 'gemini-3.8-flash', remainingFraction: 0.9 }, 'gemini');
+    expect(bucket['gemini/gemini-3.8-flash'].windows.daily.usedPercent).toBe(10);
+    expect(bucket['gemini/gemini-3.8-flash'].windows.daily.dynamic).toBe(true);
+
+    // Aggregates never carry the flag: they are what must yield to live data.
+    const { familyWindows } = transformUserQuotaSummary(STATIC_GEMINI_STUB_SUMMARY);
+    expect(familyWindows.gemini['5h'].dynamic).toBeUndefined();
+    expect(familyWindows.gemini.weekly.dynamic).toBeUndefined();
+  });
+
+  it('keeps a dynamic per-model 5h intact while syncing the live weekly into the model', () => {
+    const { familyWindows } = transformUserQuotaSummary(STATIC_GEMINI_STUB_SUMMARY);
+
+    const models = {
+      ...transformModelData('gemini-3.8-flash', { quotaInfo: { remainingFraction: 0.83 } }, 'antigravity'),
+      // A model that reported no quotaInfo: no usable live reading.
+      ...transformModelData('gemini-4-pro', {}, 'antigravity'),
+      'antigravity/claude-sonnet-5-5': { windows: {} }
+    };
+
+    applyFamilyWindowsToModels(models, familyWindows);
+
+    // The live 17% reading survives the 0%-used grouped stub untouched...
+    expect(models['antigravity/gemini-3.8-flash'].windows['5h'].usedPercent).toBe(17);
+    // ...and the weekly window is still synced from the live summary.
+    expect(models['antigravity/gemini-3.8-flash'].windows.weekly.usedPercent).toBe(27);
+    // A model without a usable reading still receives the family 5h, and the
+    // merged aggregate never inherits the dynamic flag.
+    expect(models['antigravity/gemini-4-pro'].windows['5h'].usedPercent).toBe(0);
+    expect(models['antigravity/gemini-4-pro'].windows['5h'].dynamic).toBeUndefined();
+    // Non-gemini models take the 3p family windows as before.
+    expect(models['antigravity/claude-sonnet-5-5'].windows['5h'].usedPercent).toBe(0);
+    expect(models['antigravity/claude-sonnet-5-5'].windows.weekly.usedPercent).toBe(50);
+  });
+});
+
+describe('Google — deriveGeminiFiveHourWindow', () => {
+  it('returns the most-consumed dynamic Gemini 5h window, cloned, excluding 3p models', () => {
+    const models = {
+      'antigravity/gemini-3.8-flash': { windows: { '5h': { usedPercent: 17, windowSeconds: 18000, dynamic: true } } },
+      'antigravity/gemini-4-pro': { windows: { '5h': { usedPercent: 42, windowSeconds: 18000, dynamic: true } } },
+      'antigravity/claude-sonnet-5-5': { windows: { '5h': { usedPercent: 98, windowSeconds: 18000, dynamic: true } } }
+    };
+
+    const derived = deriveGeminiFiveHourWindow(models);
+
+    expect(derived).not.toBeNull();
+    expect(derived.usedPercent).toBe(42);
+    expect(derived.windowSeconds).toBe(18000);
+    // Cloned: the provider-level window never aliases a model record.
+    expect(derived).not.toBe(models['antigravity/gemini-4-pro'].windows['5h']);
+  });
+
+  it('ignores aggregate, unusable, non-5h and empty inputs', () => {
+    // Aggregate window (no dynamic flag) — the static stub must not win.
+    expect(deriveGeminiFiveHourWindow({
+      'antigravity/gemini-3.8-flash': { windows: { '5h': { usedPercent: 5, windowSeconds: 18000 } } }
+    })).toBeNull();
+    // Flagged but unusable reading.
+    expect(deriveGeminiFiveHourWindow({
+      'antigravity/gemini-3.8-flash': { windows: { '5h': { usedPercent: null, windowSeconds: 18000, dynamic: true } } }
+    })).toBeNull();
+    // Dynamic reading under a different window label.
+    expect(deriveGeminiFiveHourWindow({
+      'antigravity/gemini-3.8-flash': { windows: { daily: { usedPercent: 90, dynamic: true } } }
+    })).toBeNull();
+    expect(deriveGeminiFiveHourWindow({})).toBeNull();
+    expect(deriveGeminiFiveHourWindow(null)).toBeNull();
+  });
+
+  it('produces the provider 5h from real transformModelData output end to end', () => {
+    const models = {
+      ...transformModelData('gemini-3.8-flash', { quotaInfo: { remainingFraction: 0.83 } }, 'antigravity'),
+      ...transformModelData('gemini-4-pro', { quotaInfo: { remainingFraction: 0.58 } }, 'antigravity')
+    };
+
+    const derived = deriveGeminiFiveHourWindow(models);
+
+    expect(derived.usedPercent).toBe(42);
   });
 });

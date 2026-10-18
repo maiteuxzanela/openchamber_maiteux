@@ -31,6 +31,70 @@ export const parseGoogleRefreshToken = (rawRefreshToken) => {
   };
 };
 
+/**
+ * A window carries usable numbers only when it has a finite `usedPercent`;
+ * everything else (null/NaN from a model that reported no quotaInfo) is
+ * "no data" and must never block an aggregate from filling it.
+ *
+ * @param {unknown} usageWindow
+ * @returns {boolean}
+ */
+const hasFiniteUsedPercent = (usageWindow) => Boolean(
+  usageWindow
+  && typeof usageWindow === 'object'
+  && typeof usageWindow.usedPercent === 'number'
+  && Number.isFinite(usageWindow.usedPercent)
+);
+
+/**
+ * Wraps a `toUsageWindow` payload marking the result as a DYNAMIC per-model
+ * reading (fetchAvailableModels / retrieveUserQuota) — but ONLY when the
+ * reading actually carries a finite percentage. A model that reported no
+ * usable quotaInfo stays an ordinary window, so family/cached windows may still
+ * fill it without ever leaking the `dynamic` flag onto an aggregate value.
+ *
+ * Grouped windows from `retrieveUserQuotaSummary` and the on-disk
+ * `cachedQuota` are family-level aggregates and never carry this flag, so
+ * downstream merges can tell a live per-model value apart from an aggregate
+ * stub (e.g. a generic `gemini-5h` bucket pinned at remainingFraction 1.0 →
+ * 0% used forever).
+ *
+ * @param {{ usedPercent?: number|null, windowSeconds?: number|null, resetAt?: number|null }} payload
+ * @returns {Record<string, unknown>}
+ */
+const toDynamicUsageWindow = (payload) => {
+  const usageWindow = toUsageWindow(payload);
+  return hasFiniteUsedPercent(usageWindow) ? { ...usageWindow, dynamic: true } : usageWindow;
+};
+
+/**
+ * A window counts as a live per-model reading only when it is flagged
+ * `dynamic` AND carries a finite percentage. The finite check is defensive: a
+ * flagged window without usable numbers (legacy/foreign data) must never block
+ * the family value from filling it.
+ *
+ * @param {unknown} usageWindow
+ * @returns {boolean}
+ */
+const hasDynamicReading = (usageWindow) => Boolean(
+  usageWindow
+  && typeof usageWindow === 'object'
+  && usageWindow.dynamic === true
+  && hasFiniteUsedPercent(usageWindow)
+);
+
+/**
+ * Claude/GPT/chat models belong to the non-gemini (3p) family; every other
+ * model maps to the gemini family. Shared by the family merge and the
+ * provider-level 5h derivation so both classify models identically.
+ *
+ * @param {string} modelName
+ * @returns {boolean}
+ */
+const isNonGeminiModelName = (modelName) => (
+  modelName.includes('claude') || modelName.includes('gpt') || modelName.includes('chat_')
+);
+
 const resolveGoogleWindow = (sourceId, resetAt) => {
   if (sourceId === 'gemini') {
     return { label: 'daily', seconds: GOOGLE_DAILY_WINDOW_SECONDS };
@@ -72,7 +136,7 @@ export const transformQuotaBucket = (bucket, sourceId) => {
   return {
     [scopedName]: {
       windows: {
-        [window.label]: toUsageWindow({
+        [window.label]: toDynamicUsageWindow({
           usedPercent,
           windowSeconds: window.seconds,
           resetAt
@@ -100,7 +164,7 @@ export const transformModelData = (modelName, modelData, sourceId) => {
   return {
     [scopedName]: {
       windows: {
-        [window.label]: toUsageWindow({
+        [window.label]: toDynamicUsageWindow({
           usedPercent,
           windowSeconds: window.seconds,
           resetAt
@@ -333,8 +397,13 @@ export const transformUserQuotaSummary = (payload) => {
  * `transformUserQuotaSummary` result. Gemini models map to the gemini family;
  * Claude/GPT/chat models map to the non-gemini (3p) family.
  *
- * Live windows are authoritative and override any cached/observed values while
- * preserving any extra fields the model window already carried.
+ * Live family windows are authoritative and override stale/cached values while
+ * preserving any extra fields the model window already carried — EXCEPT for a
+ * DYNAMIC per-model reading (`dynamic: true`, produced by
+ * `transformModelData`/`transformQuotaBucket`): a grouped family bucket (e.g.
+ * `gemini-5h` = 1.0 → 0% used) is an aggregate stub and must never clobber the
+ * real rolling quota the model itself is reporting, otherwise the gauge freezes
+ * at 0% while consumption keeps rising.
  *
  * @param {Record<string, object>} models
  * @param {Record<string, Record<string, object>>} familyWindows
@@ -357,14 +426,21 @@ export const applyFamilyWindowsToModels = (models, familyWindows) => {
     if (!modelEntry || typeof modelEntry !== 'object') continue;
     if (!modelEntry.windows) modelEntry.windows = {};
 
-    const isNonGemini = modelName.includes('claude') || modelName.includes('gpt') || modelName.includes('chat_');
-    const sourceWindows = isNonGemini ? nonGeminiWindows : geminiWindows;
+    const sourceWindows = isNonGeminiModelName(modelName) ? nonGeminiWindows : geminiWindows;
 
     for (const label of ['weekly', '5h']) {
+      const existing = modelEntry.windows[label];
+      if (hasDynamicReading(existing)) {
+        // The model already reports its own live value for this window: the
+        // family aggregate must not overwrite it (weekly still lands on models
+        // that carry no dynamic weekly reading of their own).
+        continue;
+      }
+
       const liveWindow = sourceWindows[label];
       if (liveWindow) {
         modelEntry.windows[label] = {
-          ...(modelEntry.windows[label] ?? {}),
+          ...(existing ?? {}),
           ...liveWindow
         };
       }
@@ -375,8 +451,50 @@ export const applyFamilyWindowsToModels = (models, familyWindows) => {
 };
 
 /**
+ * Derives the provider-level `5h` window from the LIVE per-model readings of
+ * the Gemini family (Claude/GPT/chat models belong to the 3p family and are
+ * always excluded), returning the most-consumed Gemini model's window — the
+ * most conservative reading drives the sidebar gauge.
+ *
+ * This exists because the grouped `gemini-5h` bucket of
+ * `retrieveUserQuotaSummary` (and the on-disk cachedQuota) can stay pinned at
+ * remainingFraction 1.0 → 0% used while real Gemini models are already
+ * consuming their rolling quota.
+ *
+ * @param {Record<string, object>} models
+ * @returns {Record<string, unknown> | null} the winning 5h window, or null when
+ *   no Gemini model carries a usable dynamic 5h reading.
+ */
+export const deriveGeminiFiveHourWindow = (models) => {
+  if (!models || typeof models !== 'object') {
+    return null;
+  }
+
+  let mostConsumed = null;
+  for (const [modelName, modelEntry] of Object.entries(models)) {
+    if (isNonGeminiModelName(modelName)) continue;
+    if (!modelEntry || typeof modelEntry !== 'object') continue;
+
+    const window = modelEntry.windows?.['5h'];
+    if (!hasDynamicReading(window)) continue;
+
+    if (!mostConsumed || window.usedPercent > mostConsumed.usedPercent) {
+      mostConsumed = window;
+    }
+  }
+
+  // Clone so the provider-level window never aliases a model record.
+  return mostConsumed ? { ...mostConsumed } : null;
+};
+
+/**
  * Augments model records with weekly (and missing 5h) windows from cachedQuota.
  * Gemini models map to cachedQuota.gemini; Claude/GPT/other non-gemini models map to cachedQuota['non-gemini'].
+ *
+ * A model window that carries usable numbers keeps winning the merge (its
+ * values — a live `dynamic` reading included — are fresher than the on-disk
+ * snapshot); a model window without usable numbers is REPLACED by the cached
+ * value instead of blocking it with nulls.
  *
  * @param {Record<string, object>} models
  * @param {unknown} cachedQuota
@@ -392,32 +510,23 @@ export const applyCachedQuotaToModels = (models, cachedQuota) => {
   const geminiWindows = transformCachedQuotaWindows(quotaObj.gemini ?? quotaObj);
   const nonGeminiWindows = transformCachedQuotaWindows(quotaObj['non-gemini']);
 
+  const mergeCachedWindow = (existing, cachedWindow) => (
+    hasFiniteUsedPercent(existing)
+      ? { ...cachedWindow, ...existing }
+      : cachedWindow
+  );
+
   for (const [modelName, modelEntry] of Object.entries(models)) {
     if (!modelEntry || typeof modelEntry !== 'object') continue;
     if (!modelEntry.windows) modelEntry.windows = {};
 
-    const isNonGemini = modelName.includes('claude') || modelName.includes('gpt') || modelName.includes('chat_');
-    const sourceWindows = isNonGemini ? nonGeminiWindows : geminiWindows;
+    const sourceWindows = isNonGeminiModelName(modelName) ? nonGeminiWindows : geminiWindows;
 
     if (sourceWindows?.weekly) {
-      if (!modelEntry.windows.weekly) {
-        modelEntry.windows.weekly = sourceWindows.weekly;
-      } else {
-        modelEntry.windows.weekly = {
-          ...sourceWindows.weekly,
-          ...modelEntry.windows.weekly
-        };
-      }
+      modelEntry.windows.weekly = mergeCachedWindow(modelEntry.windows.weekly, sourceWindows.weekly);
     }
     if (sourceWindows?.['5h']) {
-      if (!modelEntry.windows['5h']) {
-        modelEntry.windows['5h'] = sourceWindows['5h'];
-      } else {
-        modelEntry.windows['5h'] = {
-          ...sourceWindows['5h'],
-          ...modelEntry.windows['5h']
-        };
-      }
+      modelEntry.windows['5h'] = mergeCachedWindow(modelEntry.windows['5h'], sourceWindows['5h']);
     }
   }
 

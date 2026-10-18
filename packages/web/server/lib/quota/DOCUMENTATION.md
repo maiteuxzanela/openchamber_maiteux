@@ -75,6 +75,16 @@ Claude quota reports the subscription limits Claude Code itself is bound by, rea
 - **Rate limiting**: Anthropic returns 429 aggressively. The last successful usage payload is cached in memory and reserved during a cooldown (`Retry-After`, else five minutes, capped at one hour). The cache is keyed by a hash of the access and refresh tokens, so switching accounts drops it instead of showing the previous account's numbers.
 - **Runtime parity**: Web/Electron and VS Code preserve the last successful Claude values during the same bounded 429 cooldown. Quota dispatchers also coalesce concurrent refreshes for the same provider in each runtime, while requests for different providers remain parallel.
 
+## Google / Antigravity quota window precedence
+
+Google quota merges three sources under a strict precedence so the sidebar gauge never freezes on an aggregate stub:
+
+1. **Dynamic per-model readings (highest).** `fetchAvailableModels` (`quotaInfo.remainingFraction`) and the `retrieveUserQuota` buckets produce windows flagged `dynamic: true` — but only when the percentage is finite, so a model that reported no `quotaInfo` stays fillable. These are the real rolling quotas of each model and are never overwritten.
+2. **Live grouped summary.** `retrieveUserQuotaSummary` yields the `gemini` and `3p` family windows (`gemini-weekly`, `gemini-5h`, `3p-*`). It is the only source of the weekly limit, so it stays authoritative for `weekly`. Its grouped `gemini-5h` bucket can reply pinned at `remainingFraction: 1.0` (0% used) while real Gemini models already report consumption: it must never clobber a dynamic `5h` reading (doing so froze the gauge at 0%).
+3. **On-disk `cachedQuota` (lowest).** Used only while the live summary is unreachable, and it fills only windows that carry no usable percentage — a `null` `usedPercent` never blocks an aggregate from landing.
+
+`usage.windows['5h']` at provider level is derived from the most-consumed Gemini-family model's dynamic reading (`deriveGeminiFiveHourWindow` in `providers/google/transforms.js`); Claude/GPT/chat models belong to the 3p family and are excluded from that derivation (they keep their own live readings instead). Provider `weekly` keeps coming from the live summary (or the cached fallback). The `dynamic` flag is stripped by the UI response schema (`packages/ui/src/lib/quota/fetchQuota.ts`), so it never crosses the API boundary.
+
 ## Add a new provider (quick steps)
 1. Choose module shape based on complexity:
    - Simple providers: create `packages/web/server/lib/quota/providers/<provider>.js`.
