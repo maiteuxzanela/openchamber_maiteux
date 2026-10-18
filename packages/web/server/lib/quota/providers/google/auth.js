@@ -5,6 +5,9 @@
  * @module quota/providers/google/auth
  */
 
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import {
   ANTIGRAVITY_ACCOUNTS_PATHS,
   getAuthEntry,
@@ -17,6 +20,76 @@ import {
 } from '../../utils/index.js';
 import { readAuthFile } from '../../../opencode/auth.js';
 import { parseGoogleRefreshToken } from './transforms.js';
+
+export const getAntigravityCandidatePaths = () => {
+  const home = process.env.HOME || os.homedir();
+  const configHome = process.env.XDG_CONFIG_HOME?.trim() || path.join(home, '.config');
+  return [
+    path.join(configHome, 'opencode', 'antigravity-accounts.json'),
+    path.join(home, '.local', 'share', 'opencode', 'antigravity-accounts.json')
+  ];
+};
+
+const readJsonFile = (filePath) => {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8').trim();
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
+export const resolveAntigravityVersionedStore = (storePath) => {
+  const pointerPath = `${storePath}.store.pointer.json`;
+  const pointer = readJsonFile(pointerPath);
+  const directoryBasename = asNonEmptyString(pointer?.directoryBasename);
+  if (!directoryBasename) {
+    return null;
+  }
+
+  const genDir = path.join(path.dirname(storePath), directoryBasename);
+  const config = readJsonFile(path.join(genDir, 'config.json'));
+  if (!config) {
+    return null;
+  }
+  const state = readJsonFile(path.join(genDir, 'state.json'));
+
+  const configAccounts = Array.isArray(config.accounts) ? config.accounts : [];
+  const stateAccounts = asObject(state?.accounts) ?? {};
+  const rows = asObject(asObject(config.commonAuthPool)?.rows) ?? {};
+  const routing = asObject(config.antigravityRouting) ?? {};
+
+  const accounts = configAccounts
+    .map((entry) => {
+      const id = asNonEmptyString(asObject(entry)?.id);
+      if (!id) return null;
+
+      const stateEntry = asObject(stateAccounts[id]) ?? {};
+      const metadata = asObject(asObject(stateEntry.commonAuthProviderState)?.metadata) ?? {};
+      const row = asObject(rows[id]) ?? {};
+
+      return {
+        id,
+        accessToken: asNonEmptyString(stateEntry.access),
+        refreshToken: asNonEmptyString(stateEntry.refresh),
+        expires: toTimestamp(stateEntry.expires),
+        email: asNonEmptyString(metadata.email),
+        projectId: asNonEmptyString(metadata.projectId),
+        managedProjectId: asNonEmptyString(metadata.managedProjectId),
+        cachedQuota: asObject(asObject(row.quota)?.cachedQuota)
+      };
+    })
+    .filter((account) => account !== null);
+
+  return {
+    accounts,
+    activeIndex: typeof routing.activeIndex === 'number' ? routing.activeIndex : undefined,
+    activeIndexByFamily: asObject(routing.activeIndexByFamily),
+    activeRowByFamily: asObject(routing.activeRowByFamily)
+  };
+};
 
 const ANTIGRAVITY_GOOGLE_CLIENT_ID =
   '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
@@ -66,8 +139,21 @@ const resolveGeminiCliAuth = (auth) => {
 };
 
 export const resolveAntigravityAuth = () => {
-  for (const filePath of ANTIGRAVITY_ACCOUNTS_PATHS) {
-    const data = loadAntigravityAccounts(filePath);
+  const candidatePaths = [
+    ...getAntigravityCandidatePaths(),
+    ...ANTIGRAVITY_ACCOUNTS_PATHS
+  ];
+  const seenPaths = new Set();
+
+  for (const filePath of candidatePaths) {
+    if (seenPaths.has(filePath)) continue;
+    seenPaths.add(filePath);
+
+    // Prioridade: formato legado se existir com contas, senão o versionado 3.0.5 via pointer
+    let data = loadAntigravityAccounts(filePath);
+    if (!data) {
+      data = resolveAntigravityVersionedStore(filePath);
+    }
     if (!data) continue;
 
     const accounts = Array.isArray(data.accounts) ? data.accounts : [];

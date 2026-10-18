@@ -5,12 +5,16 @@ import os from 'os';
 const OPENCODE_DATA_DIR = path.join(os.homedir(), '.local', 'share', 'opencode');
 const AUTH_FILE = path.join(OPENCODE_DATA_DIR, 'auth.json');
 
+const resolveOpencodeDataDir = () => path.join(process.env.HOME || os.homedir(), '.local', 'share', 'opencode');
+const resolveAuthFile = () => path.join(resolveOpencodeDataDir(), 'auth.json');
+
 function readAuthFile() {
-  if (!fs.existsSync(AUTH_FILE)) {
+  const authFile = resolveAuthFile();
+  if (!fs.existsSync(authFile)) {
     return {};
   }
   try {
-    const content = fs.readFileSync(AUTH_FILE, 'utf8');
+    const content = fs.readFileSync(authFile, 'utf8');
     const trimmed = content.trim();
     if (!trimmed) {
       return {};
@@ -23,21 +27,23 @@ function readAuthFile() {
 }
 
 function writeAuthFile(auth) {
+  const dataDir = resolveOpencodeDataDir();
+  const authFile = resolveAuthFile();
   try {
-    if (!fs.existsSync(OPENCODE_DATA_DIR)) {
-      fs.mkdirSync(OPENCODE_DATA_DIR, { recursive: true, mode: 0o700 });
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     }
-    if (process.platform !== 'win32') fs.chmodSync(OPENCODE_DATA_DIR, 0o700);
+    if (process.platform !== 'win32') fs.chmodSync(dataDir, 0o700);
 
-    if (fs.existsSync(AUTH_FILE)) {
-      const backupFile = `${AUTH_FILE}.openchamber.backup`;
-      fs.copyFileSync(AUTH_FILE, backupFile);
+    if (fs.existsSync(authFile)) {
+      const backupFile = `${authFile}.openchamber.backup`;
+      fs.copyFileSync(authFile, backupFile);
       if (process.platform !== 'win32') fs.chmodSync(backupFile, 0o600);
       console.log(`Created auth backup: ${backupFile}`);
     }
 
-    fs.writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2), { encoding: 'utf8', mode: 0o600 });
-    if (process.platform !== 'win32') fs.chmodSync(AUTH_FILE, 0o600);
+    fs.writeFileSync(authFile, JSON.stringify(auth, null, 2), { encoding: 'utf8', mode: 0o600 });
+    if (process.platform !== 'win32') fs.chmodSync(authFile, 0o600);
     console.log('Successfully wrote auth file');
   } catch (error) {
     console.error('Failed to write auth file:', error);

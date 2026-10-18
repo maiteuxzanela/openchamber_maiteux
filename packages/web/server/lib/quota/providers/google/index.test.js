@@ -118,7 +118,9 @@ const writeGeminiCliAuth = () => {
 };
 
 const loadIndex = async () => {
-  vi.resetModules();
+  if (typeof vi?.resetModules === 'function') {
+    vi.resetModules();
+  }
   return import('./index.js');
 };
 
@@ -192,7 +194,9 @@ afterEach(() => {
   else process.env.HOME = originalEnv.HOME;
   if (originalEnv.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = originalEnv.XDG_CONFIG_HOME;
-  vi.resetModules();
+  if (typeof vi?.resetModules === 'function') {
+    vi.resetModules();
+  }
   fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
