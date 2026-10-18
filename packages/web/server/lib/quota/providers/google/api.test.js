@@ -14,7 +14,8 @@ import {
   refreshGoogleAccessToken,
   fetchGoogleQuotaBuckets,
   fetchGoogleModels,
-  fetchGoogleQuotaSummary
+  fetchGoogleQuotaSummary,
+  GOOGLE_HEADERS
 } from './api.js';
 
 const SUMMARY_PATH = '/v1internal:retrieveUserQuotaSummary';
@@ -29,6 +30,7 @@ const installFetchRecorder = (handler) => {
     const record = {
       url: String(url),
       method: init?.method ?? 'GET',
+      headers: init?.headers ?? {},
       body: init?.body ?? null
     };
     calls.push(record);
@@ -262,5 +264,21 @@ describe('google provider api.js — fetchGoogleQuotaSummary', () => {
 
     await expect(fetchGoogleQuotaSummary('access-token', 'project-xyz')).resolves.toBeNull();
     expect(calls).toHaveLength(2);
+  });
+
+  it('sends modern antigravity/2.24.0 headers ensuring daily endpoint returns Gemini Models', async () => {
+    const calls = installFetchRecorder(() => ({ body: { groups: [geminiGroup()] } }));
+
+    await fetchGoogleQuotaSummary('access-token', 'project-xyz');
+
+    expect(calls).toHaveLength(1);
+    expect(GOOGLE_HEADERS['User-Agent']).toBe('antigravity/2.24.0 linux/amd64');
+    expect(JSON.parse(GOOGLE_HEADERS['Client-Metadata'])).toEqual({
+      ideType: 'IDE_TYPE_ANTIGRAVITY',
+      platform: 'PLATFORM_LINUX',
+      pluginType: 'GEMINI'
+    });
+    expect(calls[0].headers['User-Agent']).toBe('antigravity/2.24.0 linux/amd64');
+    expect(calls[0].headers['Client-Metadata']).toBe(GOOGLE_HEADERS['Client-Metadata']);
   });
 });

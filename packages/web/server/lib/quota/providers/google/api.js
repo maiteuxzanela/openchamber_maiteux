@@ -13,11 +13,11 @@ const GOOGLE_ENDPOINTS = [
   GOOGLE_PRIMARY_ENDPOINT
 ];
 
-const GOOGLE_HEADERS = {
-  'User-Agent': 'antigravity/1.11.5 windows/amd64',
+export const GOOGLE_HEADERS = {
+  'User-Agent': 'antigravity/2.24.0 linux/amd64',
   'X-Goog-Api-Client': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
   'Client-Metadata':
-    '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}'
+    '{"ideType":"IDE_TYPE_ANTIGRAVITY","platform":"PLATFORM_LINUX","pluginType":"GEMINI"}'
 };
 
 export const refreshGoogleAccessToken = async (refreshToken, clientId, clientSecret) => {
