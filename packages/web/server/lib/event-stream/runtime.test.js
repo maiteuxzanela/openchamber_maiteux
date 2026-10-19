@@ -570,3 +570,82 @@ describe('message stream websocket runtime', () => {
     await runtime.close();
   });
 });
+
+// TICKET-HARNESS-54: the WebSocket channel is the UI's default transport, so
+// the synthetic `[Continue]` turn must be suppressed here too (SSE proxy and
+// history filtering alone would leave the default path exposed).
+describe('synthetic [Continue] suppression over WebSocket', () => {
+  const pulseEvent = {
+    type: 'message.part.updated',
+    properties: { sessionID: 'ses_1', part: { id: 'prt_pulse', messageID: 'msg_pulse', type: 'text', text: '[Continue]' } },
+  };
+  const legitEvent = {
+    type: 'message.part.updated',
+    properties: { sessionID: 'ses_1', part: { id: 'prt_real', messageID: 'msg_real', type: 'text', text: 'implement the fix' } },
+  };
+  const blocks = [
+    `id: pulse\ndata: ${JSON.stringify(pulseEvent)}\n\n`,
+    `id: legit\ndata: ${JSON.stringify(legitEvent)}\n\n`,
+  ];
+
+  it('drops the pulse on the global websocket stream and never replays it', async () => {
+    const hub = createGlobalMessageStreamHub({
+      buildOpenCodeUrl: (path) => `http://127.0.0.1:4096${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      upstreamReconnectDelayMs: 60_000,
+      fetchImpl: async () => createSseResponse({ blocks }),
+    });
+    const runtime = createMessageStreamWsRuntime({
+      server: new EventEmitter(),
+      globalEventHub: hub,
+      wsClients: new Set(),
+      uiAuthController: null,
+      isRequestOriginAllowed: async () => true,
+      rejectWebSocketUpgrade() {},
+      buildOpenCodeUrl: (path) => `http://127.0.0.1:4096${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      processForwardedEventPayload() {},
+    });
+    const socket = new FakeSocket();
+    try {
+      runtime.wsServer.emit('connection', socket, { url: '/api/global/event/ws' });
+      await expect.poll(() => socket.sent.filter((frame) => frame.type === 'event').length).toBe(1);
+      const delivered = socket.sent.filter((frame) => frame.type === 'event');
+      expect(delivered[0].payload.properties.part.text).toBe('implement the fix');
+      expect(delivered.some((frame) => JSON.stringify(frame).includes('[Continue]'))).toBe(false);
+      expect(hub.replayAfter('pulse')).toBeNull();
+    } finally {
+      socket.close();
+      hub.stop();
+      await runtime.close();
+    }
+  });
+
+  it('drops the pulse on a directory websocket stream', async () => {
+    const runtime = createMessageStreamWsRuntime({
+      server: new EventEmitter(),
+      uiAuthController: null,
+      isRequestOriginAllowed: async () => true,
+      rejectWebSocketUpgrade() {
+        throw new Error('upgrade should not be used in this test');
+      },
+      buildOpenCodeUrl: (path) => `http://127.0.0.1:4096${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      processForwardedEventPayload() {},
+      wsClients: new Set(),
+      upstreamReconnectDelayMs: 60_000,
+      fetchImpl: async () => createSseResponse({ blocks }),
+    });
+    const socket = new FakeSocket();
+    try {
+      runtime.wsServer.emit('connection', socket, { url: '/api/event/ws?directory=/tmp/project' });
+      await expect.poll(() => socket.sent.filter((frame) => frame.type === 'event').length).toBe(1);
+      const delivered = socket.sent.filter((frame) => frame.type === 'event');
+      expect(delivered[0].payload.properties.part.text).toBe('implement the fix');
+      expect(socket.sent.some((frame) => JSON.stringify(frame).includes('[Continue]'))).toBe(false);
+    } finally {
+      socket.close();
+      await runtime.close();
+    }
+  });
+});
