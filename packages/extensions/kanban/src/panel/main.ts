@@ -87,12 +87,13 @@ const FOCUS_RELOAD_COOLDOWN_MS = 1000;
  * or before the user grants it in Settings → Extensions.
  */
 const CANONICAL_PROJECTS: readonly ProjectSummary[] = [
-  { id: 'projeto_jev', title: 'Projeto JEV', path: '/home/maiteuxzanela/projeto JEV', totalTickets: 0, openTickets: 0, doneTickets: 0 },
+  { id: 'projeto_jev', title: 'agent_quality_guard', path: '/home/maiteuxzanela/projeto JEV', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'jez_collections', title: 'JEZ Collections', path: '/mnt/94CCB337CCB3130A/JEZ collections', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'panela_sobra', title: 'Panela de Sobra', path: '/home/maiteuxzanela/PanelaBuild', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'faturamento_medico', title: 'Faturamento Médico', path: '/mnt/94CCB337CCB3130A/Faturamento', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'predictera', title: 'Predictera', path: '/mnt/94CCB337CCB3130A/predictera', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'opencode_chambers_harness', title: 'OpenCode Chambers Harness', path: '/mnt/94CCB337CCB3130A/opencode_chambers_harness', totalTickets: 0, openTickets: 0, doneTickets: 0 },
+  { id: 'ensemble_room_lowcost', title: 'Ensemble Hardened', path: '/mnt/94CCB337CCB3130A/ensemble-room-lowcost', totalTickets: 0, openTickets: 0, doneTickets: 0 },
 ];
 
 const PRIORITY_LABEL: Record<TicketPriority, string> = {

@@ -286,12 +286,12 @@ const projectSummary = (id: string, title: string): Project => ({
 });
 
 const SINGLE_PROJECT: PanelConfig = {
-  projects: [projectSummary('projeto_jev', 'Projeto JEV')],
+  projects: [projectSummary('projeto_jev', 'agent_quality_guard')],
   tickets: { projeto_jev: [openTicket('KB-1')] },
 };
 
 const TWO_PROJECTS: PanelConfig = {
-  projects: [projectSummary('projeto_jev', 'Projeto JEV'), projectSummary('jez_collections', 'JEZ Collections')],
+  projects: [projectSummary('projeto_jev', 'agent_quality_guard'), projectSummary('jez_collections', 'JEZ Collections')],
   tickets: { projeto_jev: [openTicket('KB-1')], jez_collections: [openTicket('KB-2')] },
 };
 

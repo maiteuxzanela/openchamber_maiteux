@@ -56,12 +56,13 @@ const PANEL_BUNDLE = process.env['OPENCHAMBER_KANBAN_PANEL_BUNDLE']
 
 /** Canonical project list (CONTRACT_KANBAN §3). Ids are immutable route keys. */
 const PROJECTS = [
-  { id: 'projeto_jev', title: 'Projeto JEV', file: '/home/maiteuxzanela/projeto JEV/kanban.json' },
+  { id: 'projeto_jev', title: 'agent_quality_guard', file: '/home/maiteuxzanela/projeto JEV/kanban.json' },
   { id: 'jez_collections', title: 'JEZ Collections', file: '/mnt/94CCB337CCB3130A/JEZ collections/kanban.json' },
   { id: 'panela_sobra', title: 'Panela de Sobra', file: '/home/maiteuxzanela/PanelaBuild/kanban.json' },
   { id: 'faturamento_medico', title: 'Faturamento Médico', file: '/mnt/94CCB337CCB3130A/Faturamento/kanban.json' },
   { id: 'predictera', title: 'Predictera', file: '/mnt/94CCB337CCB3130A/predictera/kanban.json' },
   { id: 'opencode_chambers_harness', title: 'OpenCode Chambers Harness', file: '/mnt/94CCB337CCB3130A/opencode_chambers_harness/kanban.json' },
+  { id: 'ensemble_room_lowcost', title: 'Ensemble Hardened', file: '/mnt/94CCB337CCB3130A/ensemble-room-lowcost/kanban.json' },
 ] as const;
 
 const CLI_PROJECTS = PROJECTS.map((project) => ({ id: project.id, title: project.title }));
@@ -123,7 +124,7 @@ describe('schema: rejects contract violations (mutation sensitivity)', () => {
     meta: {
       version: 1,
       project: 'projeto_jev',
-      title: 'Projeto JEV',
+      title: 'agent_quality_guard',
       instructions: 'CONTRATO: status "open" | "done"; priority "alta" | "media" | "baixa"; completed_at.',
       updated_at: '2026-10-15T19:34:50-03:00',
     },
@@ -326,7 +327,7 @@ describe('panel: tabs wheel + scrollLeft behaviour (real bundle in a real DOM)',
     const buttons = tabs.querySelectorAll('.kb-tab');
     expect(buttons.length).toBe(CLI_PROJECTS.length + 1);
     expect(buttons[0].textContent).toContain('Todos');
-    expect(buttons[1].textContent).toContain('Projeto JEV');
+    expect(buttons[1].textContent).toContain('agent_quality_guard');
   });
 
   test('wheel: vertical deltaY > deltaX scrolls the strip and prevents default', () => {

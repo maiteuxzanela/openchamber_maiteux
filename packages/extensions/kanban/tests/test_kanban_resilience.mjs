@@ -52,7 +52,7 @@ const BUILT_PACKAGE = path.join(REPO_ROOT, 'packages', 'web', 'server', 'built-i
 const SERVICE_ENTRY = path.join(BUILT_PACKAGE, 'service', 'main.js');
 
 const PROJECTS = [
-  { id: 'projeto_jev', title: 'Projeto JEV', path: '/home/maiteuxzanela/projeto JEV', writable: true },
+  { id: 'projeto_jev', title: 'agent_quality_guard', path: '/home/maiteuxzanela/projeto JEV', writable: true },
   { id: 'jez_collections', title: 'JEZ Collections', path: '/mnt/94CCB337CCB3130A/JEZ collections' },
   { id: 'panela_sobra', title: 'Panela de Sobra', path: '/home/maiteuxzanela/PanelaBuild' },
   { id: 'faturamento_medico', title: 'Faturamento Médico', path: '/mnt/94CCB337CCB3130A/Faturamento' },
@@ -335,7 +335,7 @@ const unitTests = async () => {
   await run('unit: parseKanbanDocument isolates one bad ticket and keeps the rest', async () => {
     const sink = collect();
     const raw = {
-      meta: { version: 1, project: 'projeto_jev', title: 'Projeto JEV', updated_at: ISO },
+      meta: { version: 1, project: 'projeto_jev', title: 'agent_quality_guard', updated_at: ISO },
       tickets: [
         ticket({ id: 'A', status: 'open' }),
         ticket({ id: 'B', status: 'done', completed_at: null }),

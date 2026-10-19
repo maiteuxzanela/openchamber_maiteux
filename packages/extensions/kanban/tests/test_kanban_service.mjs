@@ -43,12 +43,13 @@ const EXTENSION_ID = 'openchamber-builtin-kanban';
 
 // Canonical project list (CONTRACT_KANBAN §3). Ids are immutable route keys.
 const PROJECTS = [
-  { id: 'projeto_jev', title: 'Projeto JEV', path: '/home/maiteuxzanela/projeto JEV', writable: true },
+  { id: 'projeto_jev', title: 'agent_quality_guard', path: '/home/maiteuxzanela/projeto JEV', writable: true },
   { id: 'jez_collections', title: 'JEZ Collections', path: '/mnt/94CCB337CCB3130A/JEZ collections' },
   { id: 'panela_sobra', title: 'Panela de Sobra', path: '/home/maiteuxzanela/PanelaBuild' },
   { id: 'faturamento_medico', title: 'Faturamento Médico', path: '/mnt/94CCB337CCB3130A/Faturamento' },
   { id: 'predictera', title: 'Predictera', path: '/mnt/94CCB337CCB3130A/predictera' },
   { id: 'opencode_chambers_harness', title: 'OpenCode Chambers Harness', path: '/mnt/94CCB337CCB3130A/opencode_chambers_harness' },
+  { id: 'ensemble_room_lowcost', title: 'Ensemble Hardened', path: '/mnt/94CCB337CCB3130A/ensemble-room-lowcost' },
 ];
 
 const ISO = z.iso.datetime({ offset: true });
@@ -301,10 +302,10 @@ const main = async () => {
     });
 
     // (b) GET /api/projects.
-    await run('http: GET /api/projects lists the 6 projects with consistent counts', async () => {
+    await run('http: GET /api/projects lists the projects with consistent counts', async () => {
       const res = await httpRequest(port, token, 'GET', '/api/projects');
       assert.equal(res.status, 200);
-      assert.equal(res.json.projects.length, 6);
+      assert.equal(res.json.projects.length, PROJECTS.length);
       assert.deepEqual(res.json.projects.map((p) => p.id), PROJECTS.map((p) => p.id));
       for (const entry of res.json.projects) {
         const project = PROJECTS.find((p) => p.id === entry.id);
