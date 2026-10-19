@@ -126,8 +126,42 @@ describe('realtime proxy', () => {
     }
   });
 
-  it('rejects unauthenticated SSE proxy requests', async () => {
-    const upstream = await startSseUpstream();
+  it('suppresses a synthetic [Continue] frame on the proxied SSE stream', async () => {
+    const pulse = JSON.stringify({
+      type: 'message.part.updated',
+      properties: { part: { id: 'prt_pulse', type: 'text', text: '[Continue]' } },
+    });
+    const legit = JSON.stringify({
+      type: 'message.part.updated',
+      properties: { part: { id: 'prt_real', type: 'text', text: 'implement the fix' } },
+    });
+    const upstream = http.createServer((req, res) => {
+      if (new URL(req.url || '/', 'http://127.0.0.1').pathname !== '/api/global/event') {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+      res.write(`data: ${pulse}\n\n`);
+      res.end(`data: ${legit}\n\n`);
+    });
+    const upstreamOrigin = await listen(upstream);
+    const { origin, runtime } = await startProxyServer({ apiBaseUrl: upstreamOrigin });
+
+    try {
+      const response = await fetch(buildRealtimeProxySseUrl(origin, `${upstreamOrigin}/api/global/event`), {
+        headers: { Accept: 'text/event-stream', Origin: 'openchamber-ui://app' },
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).not.toContain('[Continue]');
+      expect(body).toContain('implement the fix');
+    } finally {
+      runtime.stop();
+    }
+  });
+
+  it('rejects unauthenticated SSE proxy requests', async () => {    const upstream = await startSseUpstream();
     const { origin, runtime } = await startProxyServer({ apiBaseUrl: upstream.origin, authToken: null });
 
     try {

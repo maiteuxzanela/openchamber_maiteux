@@ -1,5 +1,6 @@
 import { sendMessageStreamWsEvent, sendMessageStreamWsFrame } from './protocol.js';
 import { createUpstreamSseReader } from './upstream-reader.js';
+import { isSyntheticContinuationEvent } from '../synthetic-continuation.js';
 
 function shouldTriggerUpstreamHealthCheck(upstream) {
   if (!upstream) {
@@ -72,6 +73,11 @@ export function acceptDirectoryMessageStreamWsConnection({
 
   const run = async () => {
     const forwardEvent = ({ envelope, payload }) => {
+      // TICKET-HARNESS-54: drop the synthetic continuation turn before it is
+      // serialized to the client (WebSocket is the UI's default transport).
+      if (isSyntheticContinuationEvent(payload)) {
+        return;
+      }
       const directory = requestedDirectory || envelope?.directory || 'global';
 
       sendMessageStreamWsEvent(socket, payload, {

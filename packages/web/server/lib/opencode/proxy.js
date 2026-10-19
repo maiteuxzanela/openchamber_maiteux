@@ -12,6 +12,25 @@ import { createRealpathCache } from '../path-realpath-cache.js';
 import { DEFAULT_UPSTREAM_STALL_TIMEOUT_MS } from '../event-stream/upstream-reader.js';
 import { recordStartupPerformance } from './startup-performance.js';
 import { getWorktreeBootstrapStatus } from '../git/service.js';
+import {
+  MAX_SYNTHETIC_PULSE_BODY_BYTES,
+  createSyntheticPulseSseFilter,
+  isSyntheticContinuationEvent,
+  isSyntheticContinuationPart,
+  isSyntheticContinuationPayload,
+  sanitizeSessionMessagesPayload,
+} from '../synthetic-continuation.js';
+
+// Preserve the historical public surface of this module (tests and other
+// callers import the pulse helpers from here).
+export {
+  MAX_SYNTHETIC_PULSE_BODY_BYTES,
+  createSyntheticPulseSseFilter,
+  isSyntheticContinuationEvent,
+  isSyntheticContinuationPart,
+  isSyntheticContinuationPayload,
+  sanitizeSessionMessagesPayload,
+};
 
 const DEFAULT_SSE_HEARTBEAT_INTERVAL_MS = 20_000;
 
@@ -284,8 +303,6 @@ const sanitizeSessionListPayload = (payload) => {
  * silentLead rest, wasted tokens). This guard inspects dispatch requests only
  * and refuses a body whose sole content is a bare continuation pulse.
  */
-const SYNTHETIC_PULSE_TEXT_PATTERN = /^\s*\[Continue\]\s*$/i;
-export const MAX_SYNTHETIC_PULSE_BODY_BYTES = 2 * 1024 * 1024;
 const SYNTHETIC_PULSE_DISPATCH_PATTERN = /^\/session\/[^/]+\/(?:prompt_async|message)\/?$/;
 
 /**
@@ -303,40 +320,6 @@ export const readRequestBody = async (req) => {
     chunks.push(buffer);
   }
   return Buffer.concat(chunks, total);
-};
-
-const collectCandidateParts = (payload) => {
-  const parts = [];
-  if (Array.isArray(payload?.parts)) parts.push(...payload.parts);
-  if (Array.isArray(payload?.message?.parts)) parts.push(...payload.message.parts);
-  return parts;
-};
-
-/**
- * True only when the request payload is exclusively one or more bare
- * continuation pulses and nothing else (no tool parts, no real text).
- */
-export const isSyntheticContinuationPayload = (payload) => {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return false;
-  }
-
-  const parts = collectCandidateParts(payload);
-  if (parts.length === 0) {
-    const text = typeof payload.text === 'string'
-      ? payload.text
-      : (typeof payload.prompt === 'string' ? payload.prompt : null);
-    return text !== null && SYNTHETIC_PULSE_TEXT_PATTERN.test(text);
-  }
-
-  const texts = [];
-  for (const part of parts) {
-    if (!part || typeof part !== 'object' || Array.isArray(part)) return false;
-    if (part.type !== undefined && part.type !== 'text') return false;
-    if (typeof part.text !== 'string') return false;
-    texts.push(part.text);
-  }
-  return texts.length > 0 && texts.every((text) => SYNTHETIC_PULSE_TEXT_PATTERN.test(text));
 };
 
 /**
@@ -580,6 +563,9 @@ export const registerOpenCodeProxy = (app, deps) => {
     let didUpstreamStall = false;
     let writeQueue = Promise.resolve(true);
     const sseBoundary = createSseBoundaryTracker();
+    // TICKET-HARNESS-54: strip synthetic `[Continue]` frames before they reach
+    // the browser, without altering framing, ordering or heartbeats.
+    const sseFilter = createSyntheticPulseSseFilter();
 
     req.on('close', closeUpstream);
 
@@ -684,10 +670,20 @@ export const registerOpenCodeProxy = (app, deps) => {
         if (value && value.length > 0) {
           resetUpstreamStallTimer();
           sseBoundary.observe(value);
-          const canContinue = await enqueueSseWrite(value);
-          if (!canContinue) {
-            break;
+          const filtered = sseFilter.push(value);
+          if (filtered.length > 0) {
+            const canContinue = await enqueueSseWrite(filtered);
+            if (!canContinue) {
+              break;
+            }
           }
+        }
+      }
+
+      if (!abortController.signal.aborted) {
+        const tail = sseFilter.flush();
+        if (tail.length > 0) {
+          await enqueueSseWrite(tail);
         }
       }
 
@@ -809,6 +805,40 @@ export const registerOpenCodeProxy = (app, deps) => {
     ensureOpenCodeApiPrefix();
     next();
   });
+
+  // TICKET-HARNESS-54: keep the persisted history coherent with the filtered
+  // live stream. If a pulse was already persisted upstream, drop the bare
+  // continuation turn here so a snapshot refetch cannot re-materialize it.
+  const forwardSanitizedSessionMessagesRequest = async (req, res, next) => {
+    try {
+      const upstreamPath = await getRequestUpstreamPath(req);
+      const result = await fetchSessionListPayload(upstreamPath, {
+        req,
+        timeoutMs: PROXY_REQUEST_TIMEOUT_MS,
+      });
+
+      res.status(result.upstream.status);
+      applyForwardProxyResponseHeaders(result.upstream.headers, res);
+
+      if (!result.isJson || result.parseError || !Array.isArray(result.payload)) {
+        res.setHeader('content-type', result.contentType);
+        res.end(result.bodyText);
+        return;
+      }
+
+      res.setHeader('content-type', result.contentType);
+      res.json(sanitizeSessionMessagesPayload(result.payload));
+    } catch (error) {
+      if (isAbortError(error)) {
+        return;
+      }
+      console.error('[proxy] OpenCode session.messages sanitizer error:', error?.message ?? error);
+      if (!res.headersSent) {
+        return next();
+      }
+      next(error);
+    }
+  };
 
   // Readiness gate — while OpenCode is starting/restarting, HOLD the request and
   // poll readiness instead of returning 503 immediately. A bare 503 pushes the
@@ -1019,6 +1049,12 @@ export const registerOpenCodeProxy = (app, deps) => {
 
   app.get('/api/session', (req, res, next) => {
     return forwardSanitizedSessionListRequest(req, res, next, 'session.list');
+  });
+
+  // Registered before the generic API proxy so the JSON page is sanitized in
+  // place instead of being streamed through untouched.
+  app.get('/api/session/:sessionID/message', (req, res, next) => {
+    return forwardSanitizedSessionMessagesRequest(req, res, next);
   });
 
   app.get('/api/global/event', forwardSseRequest);

@@ -1,5 +1,7 @@
 import { WebSocket, WebSocketServer } from 'ws';
 
+import { createSyntheticPulseSseFilter } from './synthetic-continuation.js';
+
 const PROXY_SSE_PATH = '/api/openchamber/realtime-proxy/sse';
 const PROXY_WS_PATH = '/api/openchamber/realtime-proxy/ws';
 
@@ -175,9 +177,19 @@ export const attachRealtimeProxy = ({ app, server, getDesktopRuntimeConfig, getU
       res.setHeader('Cache-Control', response.headers.get('cache-control') || 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
+      const sseFilter = createSyntheticPulseSseFilter();
       for await (const chunk of response.body) {
         if (abort.signal.aborted) break;
-        res.write(chunk);
+        const filtered = sseFilter.push(chunk);
+        if (filtered.length > 0) {
+          res.write(filtered);
+        }
+      }
+      if (!abort.signal.aborted) {
+        const tail = sseFilter.flush();
+        if (tail.length > 0) {
+          res.write(tail);
+        }
       }
       res.end();
     } catch (error) {

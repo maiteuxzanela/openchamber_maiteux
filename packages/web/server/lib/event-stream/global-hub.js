@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createUpstreamSseReader } from './upstream-reader.js';
 import { serializeMessageStreamWsEvent } from './protocol.js';
 import { createDeltaCoalescer, DELTA_COALESCE_WINDOW_MS } from './delta-coalescer.js';
+import { isSyntheticContinuationEvent } from '../synthetic-continuation.js';
 
 // Raised from 512 → 2048 to improve recovery after brief disconnects during
 // long-running agent sessions where many events accumulate quickly.
@@ -85,6 +86,12 @@ export function createGlobalMessageStreamHub({
   // replay buffer in the same step that delivers it, so a client's cursor
   // always names a frame the buffer can find.
   const commitEvent = (event) => {
+    // TICKET-HARNESS-54: a synthetic `[Continue]` turn must never enter the
+    // fan-out (nor the replay buffer) — the WebSocket channel is the UI's
+    // default transport, so filtering only the HTTP SSE proxy is insufficient.
+    if (isSyntheticContinuationEvent(event?.payload)) {
+      return;
+    }
     const normalized = normalizeEvent(event);
     latestEventId = normalized.eventId;
     const serializedFrame = normalized.serialize();
