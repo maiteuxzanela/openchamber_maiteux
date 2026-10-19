@@ -9,6 +9,15 @@
         { "entry": "src/panel/main.ts", "out": "panel/main.js", "target": "browser" },
         { "entry": "src/service/main.ts", "out": "service/main.js", "target": "node" }
       ]
+    },
+    {
+      "id": "openchamber-builtin-multirepo-diff",
+      "directory": "multirepo-diff",
+      "files": ["panel/index.html", "panel/style.css"],
+      "build": [
+        { "entry": "src/panel/main.ts", "out": "panel/main.js", "target": "browser" },
+        { "entry": "src/service/main.ts", "out": "service/main.js", "target": "node" }
+      ]
     }
   ]
 }

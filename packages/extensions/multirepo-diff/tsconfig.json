@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@openchamber/sdk": ["../../sdk/src/index.ts"],
+      "@openchamber/sdk/ui": ["../../sdk/src/ui/index.ts"],
+      "@openchamber/sdk/schemas": ["../../sdk/src/schemas.ts"]
+    }
+  },
+  "include": ["src"]
+}

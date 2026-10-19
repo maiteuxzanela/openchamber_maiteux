@@ -1,0 +1,19 @@
+{
+  "name": "@openchamber/builtin-multirepo-diff",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test": "bun tests/test_multirepo_diff.mjs"
+  },
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": { "openchamber": ">=1.22.0" },
+    "contributes": {
+      "panel": { "id": "openchamber-builtin-multirepo-diff", "name": "Multirepo Diff", "icon": "git-branch", "entry": "panel/index.html" },
+      "page": true,
+      "service": { "entry": "service/main.js", "runtime": "host", "permissions": {} }
+    }
+  }
+}
