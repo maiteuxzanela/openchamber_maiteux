@@ -7,7 +7,15 @@ import http from 'node:http';
 import { dirname } from 'node:path';
 
 import { PROJECTS, findProject, kanbanFilePath, type ProjectDefinition } from './projects.ts';
-import { emptyDoc, kanbanSchema, nowIso, type KanbanDoc, type KanbanTicket } from './schema.ts';
+import {
+  canonicalizeDoc,
+  emptyDoc,
+  kanbanSchema,
+  nowIso,
+  parseKanbanDocument,
+  type KanbanDoc,
+  type KanbanTicket,
+} from './schema.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT ?? '');
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -58,6 +66,14 @@ const withLock = <T>(key: string, task: () => Promise<T>): Promise<T> => {
   return run;
 };
 
+/**
+ * Parses kanban.json with graceful per-ticket degradation (TICKET-HARNESS-46).
+ *
+ * Meta-level corruption still aborts with `schema-invalid` (never invent a
+ * success over an unreadable file). Individual tickets are repaired or
+ * discarded by `parseKanbanDocument`, which emits a structured warning per
+ * occurrence, so one broken entry cannot take the whole project down.
+ */
 const parseKanban = (raw: string, project: ProjectDefinition): KanbanDoc => {
   let parsed: unknown;
   try {
@@ -65,12 +81,13 @@ const parseKanban = (raw: string, project: ProjectDefinition): KanbanDoc => {
   } catch {
     fail(500, 'schema-invalid', `${project.id}/kanban.json is not valid JSON`);
   }
-  const result = kanbanSchema.safeParse(parsed);
-  if (!result.success) {
-    const detail = result.error.issues[0]?.message ?? 'schema validation failed';
-    fail(500, 'schema-invalid', `${project.id}/kanban.json: ${detail}`);
+  try {
+    return parseKanbanDocument(parsed, (warning) => {
+      console.warn(`[kanban] ${project.id}/kanban.json: ${warning.message}`, warning);
+    });
+  } catch (error) {
+    fail(500, 'schema-invalid', `${project.id}/kanban.json: ${(error as Error).message}`);
   }
-  return result.data;
 };
 
 /** Reads and validates kanban.json. A missing file yields the empty template. */
@@ -217,22 +234,35 @@ const toggleTicket = async (payload: TogglePayload): Promise<ToggleResult> => {
       status: payload.done ? 'done' : 'open',
       completed_at: payload.done ? nowIso() : null,
     };
-    const next: KanbanDoc = {
+    // Auto-heal on write: canonical statuses/dates for every ticket, so a
+    // legacy or hand-edited document is sanitized as soon as it is persisted.
+    const next = canonicalizeDoc({
       meta: { ...doc.meta, updated_at: nowIso() },
       tickets: doc.tickets.map((ticket, position) => (position === index ? updated : ticket)),
-    };
+    });
+    // Final guard: never write a document that violates the strict contract.
+    const validated = kanbanSchema.safeParse(next);
+    if (!validated.success) {
+      const detail = validated.error.issues[0]?.message ?? 'schema validation failed';
+      fail(500, 'schema-invalid', `refusing to write ${project.id}/kanban.json: ${detail}`);
+    }
+    const persisted = validated.data;
     const file = kanbanFilePath(project);
     try {
-      await writeAtomic(file, `${JSON.stringify(next, null, 2)}\n`);
+      await writeAtomic(file, `${JSON.stringify(persisted, null, 2)}\n`);
     } catch (error) {
       fail(500, 'io-error', `cannot write ${project.id}/kanban.json: ${(error as Error).message}`);
     }
     const stat = await fsp.stat(file).catch(() => null);
-    cache.set(project.id, { doc: next, mtimeMs: stat?.mtimeMs ?? 0 });
+    cache.set(project.id, { doc: persisted, mtimeMs: stat?.mtimeMs ?? 0 });
     return {
       ok: true,
-      ticket: { id: updated.id, status: updated.status, completed_at: updated.completed_at },
-      updated_at: next.meta.updated_at,
+      ticket: {
+        id: persisted.tickets[index].id,
+        status: persisted.tickets[index].status,
+        completed_at: persisted.tickets[index].completed_at,
+      },
+      updated_at: persisted.meta.updated_at,
     };
   });
 };
