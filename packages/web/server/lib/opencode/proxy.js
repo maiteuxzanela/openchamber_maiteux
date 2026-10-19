@@ -273,6 +273,118 @@ const sanitizeSessionListPayload = (payload) => {
   return payload.map((session) => sanitizeSessionListItem(session));
 };
 
+/**
+ * TICKET-HARNESS-54 — defensive sanitizer for anonymous synthetic `[Continue]`
+ * pulses injected through the transport layer.
+ *
+ * The Antigravity/Gemini plugin's wire transformer and OpenCode's compaction
+ * both emit bare continuation turns. Those must never be re-injected into a
+ * session's persisted history by an external/anonymous HTTP caller, because
+ * the model then reads them as a live human order (phantom turns, broken
+ * silentLead rest, wasted tokens). This guard inspects dispatch requests only
+ * and refuses a body whose sole content is a bare continuation pulse.
+ */
+const SYNTHETIC_PULSE_TEXT_PATTERN = /^\s*\[Continue\]\s*$/i;
+export const MAX_SYNTHETIC_PULSE_BODY_BYTES = 2 * 1024 * 1024;
+const SYNTHETIC_PULSE_DISPATCH_PATTERN = /^\/session\/[^/]+\/(?:prompt_async|message)\/?$/;
+
+/**
+ * Drains the whole request body into a Buffer. The guard must never leave a
+ * half-consumed stream behind (http-proxy replays `req.body`), so on any size
+ * the full body is preserved; only bodies at or below the inspection limit are
+ * actually classified.
+ */
+export const readRequestBody = async (req) => {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, total);
+};
+
+const collectCandidateParts = (payload) => {
+  const parts = [];
+  if (Array.isArray(payload?.parts)) parts.push(...payload.parts);
+  if (Array.isArray(payload?.message?.parts)) parts.push(...payload.message.parts);
+  return parts;
+};
+
+/**
+ * True only when the request payload is exclusively one or more bare
+ * continuation pulses and nothing else (no tool parts, no real text).
+ */
+export const isSyntheticContinuationPayload = (payload) => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return false;
+  }
+
+  const parts = collectCandidateParts(payload);
+  if (parts.length === 0) {
+    const text = typeof payload.text === 'string'
+      ? payload.text
+      : (typeof payload.prompt === 'string' ? payload.prompt : null);
+    return text !== null && SYNTHETIC_PULSE_TEXT_PATTERN.test(text);
+  }
+
+  const texts = [];
+  for (const part of parts) {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return false;
+    if (part.type !== undefined && part.type !== 'text') return false;
+    if (typeof part.text !== 'string') return false;
+    texts.push(part.text);
+  }
+  return texts.length > 0 && texts.every((text) => SYNTHETIC_PULSE_TEXT_PATTERN.test(text));
+};
+
+/**
+ * Express middleware factory. Must be mounted BEFORE the generic API proxy so
+ * the body can be inspected and replayed. A caller that intentionally needs to
+ * send the literal text can opt out with `x-openchamber-intentional-prompt: 1`.
+ */
+export const createSyntheticPulseGuard = () => async (req, res, next) => {
+  if (req.method !== 'POST') return next();
+  if (!SYNTHETIC_PULSE_DISPATCH_PATTERN.test(req.path || '')) return next();
+  if (req.headers?.['x-openchamber-intentional-prompt'] === '1') return next();
+
+  let payload = null;
+  try {
+    if (Buffer.isBuffer(req.body)) {
+      if (req.body.length > MAX_SYNTHETIC_PULSE_BODY_BYTES) return next();
+      try {
+        payload = JSON.parse(req.body.toString('utf8'));
+      } catch {
+        return next();
+      }
+    } else if (req.body !== undefined && req.body !== null) {
+      payload = req.body;
+    } else {
+      const raw = await readRequestBody(req);
+      req.body = raw;
+      if (raw.length > MAX_SYNTHETIC_PULSE_BODY_BYTES) return next();
+      try {
+        payload = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return next();
+      }
+    }
+  } catch (error) {
+    return next(error);
+  }
+
+  if (isSyntheticContinuationPayload(payload)) {
+    return res.status(400).json({
+      error: 'synthetic_continue_blocked',
+      code: 'TICKET-HARNESS-54',
+      message: 'A bare continuation pulse cannot be dispatched as a session prompt.',
+    });
+  }
+
+  return next();
+};
+
 export const registerOpenCodeProxy = (app, deps) => {
   const {
     fs,
@@ -998,6 +1110,9 @@ export const registerOpenCodeProxy = (app, deps) => {
   });
 
   app.use('/api', applyProxyResponseDeadline);
+  // TICKET-HARNESS-54: reject anonymous synthetic `[Continue]` pulses before
+  // they reach OpenCode and get persisted as a visible user turn.
+  app.use('/api', createSyntheticPulseGuard());
   app.post('/api/provider/:providerID/oauth/callback', interactiveOAuthProxy);
   // OpenCode's native MCP OAuth flow: the request blocks until the user
   // finishes authorization in the browser (up to OpenCode's 5-minute callback
