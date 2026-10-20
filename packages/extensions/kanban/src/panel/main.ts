@@ -94,7 +94,51 @@ const CANONICAL_PROJECTS: readonly ProjectSummary[] = [
   { id: 'predictera', title: 'Predictera', path: '/mnt/94CCB337CCB3130A/predictera', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'opencode_chambers_harness', title: 'OpenCode Chambers Harness', path: '/mnt/94CCB337CCB3130A/opencode_chambers_harness', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'ensemble_room_lowcost', title: 'Ensemble Hardened', path: '/mnt/94CCB337CCB3130A/ensemble-room-lowcost', totalTickets: 0, openTickets: 0, doneTickets: 0 },
+  { id: 'agent_dreams', title: 'Agent Dreams', path: '/home/maiteuxzanela/.config/opencode/plugins/opencode-plugin-dreams', totalTickets: 0, openTickets: 0, doneTickets: 0 },
+  { id: 'cirurgic_search_mcp', title: 'cirurgic-search-mcp', path: '/home/maiteuxzanela/cirurgic-search-mcp', totalTickets: 0, openTickets: 0, doneTickets: 0 },
 ];
+
+/**
+ * Normalise a filesystem path for comparison: trim, drop trailing slashes
+ * (`/repo/` and `/repo` are the same checkout) while keeping the root `/`.
+ */
+const normalizeProjectPath = (value: string): string => {
+  const trimmed = value.trim();
+  if (trimmed === '') return '';
+  let normalized = trimmed;
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+};
+
+/**
+ * Resolve which tab the panel should open on, given the active directory of the
+ * host workspace (TICKET-HARNESS-70). Pure on purpose: the initial tab is a
+ * deterministic function of the host context and the project list, never of
+ * timers or of the DOM.
+ *
+ * Matching is exact (`/repo` === `/repo`) or ancestral (`/repo/app` belongs to
+ * `/repo`). No directory, or a directory that is not a kanban project, keeps
+ * the aggregate `Todos` tab.
+ */
+const resolveInitialTab = (
+  directory: string | null,
+  projects: readonly ProjectSummary[] = CANONICAL_PROJECTS,
+): string => {
+  const normalizedDirectory = typeof directory === 'string' ? normalizeProjectPath(directory) : '';
+  if (normalizedDirectory === '') return TAB_ALL;
+
+  for (const project of projects) {
+    const projectPath = normalizeProjectPath(project.path);
+    if (projectPath === '') continue;
+    if (normalizedDirectory === projectPath || normalizedDirectory.startsWith(`${projectPath}/`)) {
+      return project.id;
+    }
+  }
+
+  return TAB_ALL;
+};
 
 const PRIORITY_LABEL: Record<TicketPriority, string> = {
   alta: 'Alta',
@@ -349,12 +393,14 @@ const sortDone = (tickets: TaggedTicket[]): TaggedTicket[] =>
  * Mount
  * ------------------------------------------------------------------ */
 
-const mount = (host: HostClient, root: HTMLElement): void => {
+const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): void => {
   const state: State = {
     projects: [],
     projectsLoaded: false,
     docs: new Map(),
-    activeTab: TAB_ALL,
+    // Open on the tab that matches the workspace the host opened us for
+    // (TICKET-HARNESS-70); `Todos` when the directory is unknown.
+    activeTab: resolveInitialTab(context.directory, CANONICAL_PROJECTS),
     expanded: new Set(),
     errors: new Map(),
     pending: new Set(),
@@ -364,6 +410,25 @@ const mount = (host: HostClient, root: HTMLElement): void => {
 
   /** Wall-clock of the last `load()` start; drives the focus cooldown. */
   let lastLoadStartedAt = 0;
+
+  /** Active workspace directory reported by the host, kept live via `onDirectory`. */
+  let hostDirectory: string | null = context.directory;
+
+  /**
+   * The panel follows the host workspace only until the user picks a tab by
+   * hand: an explicit click is a deliberate intent that must not be yanked by a
+   * later directory event. Returns `true` when the active tab changed.
+   */
+  let userSelectedTab = false;
+
+  const syncActiveTabWithDirectory = (): boolean => {
+    if (userSelectedTab) return false;
+    const next = resolveInitialTab(hostDirectory, projectList());
+    if (next === state.activeTab) return false;
+    state.activeTab = next;
+    state.serviceError = null;
+    return true;
+  };
 
   /* ----- skeleton ----- */
 
@@ -601,6 +666,11 @@ const mount = (host: HostClient, root: HTMLElement): void => {
     const data = await requestJson<ProjectsResponse>(host, { method: 'GET', path: '/api/projects' });
     state.projects = Array.isArray(data.projects) ? data.projects : [];
     state.projectsLoaded = true;
+    // The canonical mirror exists only to render the tab bar before the service
+    // answers. Now that the authoritative list arrived, re-derive the
+    // host-selected tab from it; `load()` reads `state.activeTab` right after
+    // this call, so the ticket fetch targets the revalidated project.
+    syncActiveTabWithDirectory();
   };
 
   const loadProject = async (project: string): Promise<void> => {
@@ -736,6 +806,7 @@ const mount = (host: HostClient, root: HTMLElement): void => {
         button.append(label);
         button.addEventListener('click', () => {
           if (state.activeTab === tabId) return;
+          userSelectedTab = true;
           state.activeTab = tabId;
           state.serviceError = null;
           render();
@@ -855,6 +926,19 @@ const mount = (host: HostClient, root: HTMLElement): void => {
     void load();
   });
 
+  /* ----- host workspace follow (TICKET-HARNESS-70) ----- */
+
+  // When the user switches repository in OpenChamber, the host pushes the new
+  // directory; follow it onto the matching tab (unless a tab was picked by
+  // hand). `onDirectory` replays the current directory on subscribe, so this is
+  // also the single place that keeps state in sync after a late handshake.
+  host.onDirectory((directory: string | null) => {
+    hostDirectory = directory;
+    if (!syncActiveTabWithDirectory()) return;
+    render();
+    void load();
+  });
+
   render();
   void load();
 };
@@ -873,7 +957,7 @@ host.onReady((context: HostReadyContext) => {
   applyHostReady(context, document.documentElement);
   if (mounted) return;
   mounted = true;
-  mount(host, rootElement);
+  mount(host, rootElement, context);
 });
 
 window.addEventListener('pagehide', () => {
