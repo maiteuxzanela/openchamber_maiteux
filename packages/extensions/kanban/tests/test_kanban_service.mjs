@@ -43,13 +43,15 @@ const EXTENSION_ID = 'openchamber-builtin-kanban';
 
 // Canonical project list (CONTRACT_KANBAN §3). Ids are immutable route keys.
 const PROJECTS = [
-  { id: 'projeto_jev', title: 'agent_quality_guard', path: '/home/maiteuxzanela/projeto JEV', writable: true },
+  { id: 'projeto_jev', title: 'search-guard-agent', path: '/home/maiteuxzanela/search-guard-agent', writable: true },
   { id: 'jez_collections', title: 'JEZ Collections', path: '/mnt/94CCB337CCB3130A/JEZ collections' },
   { id: 'panela_sobra', title: 'Panela de Sobra', path: '/home/maiteuxzanela/PanelaBuild' },
   { id: 'faturamento_medico', title: 'Faturamento Médico', path: '/mnt/94CCB337CCB3130A/Faturamento' },
   { id: 'predictera', title: 'Predictera', path: '/mnt/94CCB337CCB3130A/predictera' },
   { id: 'opencode_chambers_harness', title: 'OpenCode Chambers Harness', path: '/mnt/94CCB337CCB3130A/opencode_chambers_harness' },
   { id: 'ensemble_room_lowcost', title: 'Ensemble Hardened', path: '/mnt/94CCB337CCB3130A/ensemble-room-lowcost' },
+  { id: 'agent_dreams', title: 'Agent Dreams', path: '/home/maiteuxzanela/.config/opencode/plugins/opencode-plugin-dreams' },
+  { id: 'cirurgic_search_mcp', title: 'cirurgic-search-mcp', path: '/home/maiteuxzanela/cirurgic-search-mcp' },
 ];
 
 const ISO = z.iso.datetime({ offset: true });
@@ -270,6 +272,12 @@ const main = async () => {
   for (const project of PROJECTS) {
     await run(`schema: ${project.id}/kanban.json conforms`, async () => {
       const file = path.join(project.path, 'kanban.json');
+      // The service's documented fallback for a missing file is the empty
+      // template, so an absent repo is not a schema violation.
+      if (!fs.existsSync(file)) {
+        console.log(`       (skipped: ${file} does not exist)`);
+        return;
+      }
       const doc = await readKanbanFile(file);
       const parsed = kanbanSchema.safeParse(doc);
       assert.ok(parsed.success, `schema issues: ${JSON.stringify(parsed.error?.issues?.slice(0, 3))}`);
@@ -322,9 +330,11 @@ const main = async () => {
         const res = await httpRequest(port, token, 'GET', `/api/kanban?project=${project.id}`);
         assert.equal(res.status, 200);
         assert.equal(res.json.project, project.id);
+        assert.equal(res.json.contractVersion, 2, 'sliced contract must announce its version');
         assert.ok(Array.isArray(res.json.tickets));
         for (const ticket of res.json.tickets) {
-          assert.ok(ticketSchema.safeParse(ticket).success, `invalid ticket ${ticket.id}`);
+          assert.equal('body' in ticket, false, `list must omit body (${project.id}/${ticket.id})`);
+          assert.ok(ticketSchema.safeParse({ ...ticket, body: '' }).success, `invalid ticket ${ticket.id}`);
         }
       });
     }
@@ -337,6 +347,35 @@ const main = async () => {
       const unknown = await httpRequest(port, token, 'GET', '/api/kanban?project=does_not_exist');
       assert.equal(unknown.status, 404);
       assert.equal(unknown.json.error.code, 'unknown-project');
+    });
+
+    // (e) F5: the markdown body is served on demand, per ticket.
+    await run('http: GET /api/kanban/ticket returns the full body on demand', async () => {
+      const res = await httpRequest(port, token, 'GET', `/api/kanban/ticket?project=${targetProject.id}&ticketId=KB-TEST-OPEN`);
+      assert.equal(res.status, 200, `expected 200, got ${res.status}: ${res.raw}`);
+      assert.equal(res.json.project, targetProject.id);
+      assert.equal(res.json.contractVersion, 2);
+      assert.deepEqual(res.json.ticket, fixture.tickets[0]);
+    });
+
+    await run('http: GET /api/kanban/ticket rejects missing/unknown ids and projects', async () => {
+      const cases = [
+        ['/api/kanban/ticket', 400, 'missing-project'],
+        [`/api/kanban/ticket?project=${targetProject.id}`, 400, 'missing-ticket'],
+        ['/api/kanban/ticket?project=ghost&ticketId=KB-TEST-OPEN', 404, 'unknown-project'],
+        [`/api/kanban/ticket?project=${targetProject.id}&ticketId=KB-GHOST`, 404, 'unknown-ticket'],
+      ];
+      for (const [requestPath, status, code] of cases) {
+        const res = await httpRequest(port, token, 'GET', requestPath);
+        assert.equal(res.status, status, `expected ${status} for ${requestPath}, got ${res.status}: ${res.raw}`);
+        assert.equal(res.json.error.code, code, `wrong error code for ${requestPath}`);
+      }
+    });
+
+    await run('http: GET /api/kanban?includeBody=1 keeps the full-document escape hatch', async () => {
+      const res = await httpRequest(port, token, 'GET', `/api/kanban?project=${targetProject.id}&includeBody=1`);
+      assert.equal(res.status, 200);
+      assert.deepEqual(res.json.tickets, fixture.tickets);
     });
 
     // (c) Toggle done:true -> persists status + completed_at, no data loss.
@@ -415,6 +454,44 @@ const main = async () => {
         assert.equal(res.status, 400, `expected 400 for ${body}`);
         assert.equal(res.json.error.code, 'invalid-payload');
       }
+    });
+
+    // (f) F5 acceptance 3: a board above 2 MiB keeps reading through the
+    // sliced contract, even though a whole-document answer would exceed the
+    // guest response budget. Runs last: it replaces the write fixture.
+    await run('http: a board above 2 MiB still lists and serves bodies on demand', async () => {
+      const now = new Date().toISOString();
+      const hugeBody = `# grande\n${'v'.repeat(1_100_000)}`;
+      const bigDoc = {
+        meta: { version: 1, project: targetProject.id, title: targetProject.title, updated_at: now },
+        tickets: [1, 2, 3].map((n) => ({
+          id: `KB-BIG-${n}`,
+          title: `Grande ${n}`,
+          status: 'open',
+          priority: 'media',
+          summary: `resumo ${n}`,
+          body: hugeBody,
+          order: n,
+          created_at: now,
+          completed_at: null,
+        })),
+      };
+      await fsp.writeFile(targetFile, `${JSON.stringify(bigDoc, null, 2)}\n`);
+      const size = (await fsp.stat(targetFile)).size;
+      assert.ok(size > 2_097_152, `fixture must exceed 2 MiB, got ${size}`);
+      const whole = await readKanbanFile(targetFile);
+      assert.ok(JSON.stringify(whole).length > 2_097_152, 'a whole-document answer must overflow the budget');
+
+      const list = await httpRequest(port, token, 'GET', `/api/kanban?project=${targetProject.id}`);
+      assert.equal(list.status, 200, `list failed: ${list.raw}`);
+      assert.equal(list.json.tickets.length, 3);
+      assert.equal(list.json.contractVersion, 2);
+      assert.ok(list.raw.length < 4_096, `sliced list must stay small, got ${list.raw.length}`);
+      for (const ticket of list.json.tickets) assert.equal('body' in ticket, false);
+
+      const detail = await httpRequest(port, token, 'GET', `/api/kanban/ticket?project=${targetProject.id}&ticketId=KB-BIG-2`);
+      assert.equal(detail.status, 200);
+      assert.equal(detail.json.ticket.body, hugeBody, 'the full body must come back intact');
     });
   } finally {
     if (service) await service.stop();

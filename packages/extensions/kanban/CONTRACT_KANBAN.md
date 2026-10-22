@@ -185,26 +185,31 @@ Lista os 6 projetos da §3 com contagens derivadas do respectivo `kanban.json`.
 - Repo sem `kanban.json` → o projeto **não** é omitido: retorna com contagens `0/0/0` (equivalente ao template vazio).
 - Arquivo inválido em um repo → esse projeto recebe contagens `0/0/0` e o service registra a falha; **não** derruba a listagem inteira.
 
-### 2.4 `GET /api/kanban?project=:id`
+### 2.4 `GET /api/kanban?project=:id` — contrato fatiado (v2, TICKET-HARNESS-88)
 
 Lê, parseia e valida o `kanban.json` do projeto. Retorna o documento canônico da §1 mais o `project` explícito.
 
-**Query:** `project` — um dos ids fixos da §3 (obrigatório).
+**Query:** `project` — um dos ids fixos da §3 (obrigatório); `includeBody=1` (opcional, debug/teste) devolve os tickets completos.
 
-**Resposta `200`:**
+**Resposta `200` (v2 — `body` NÃO vem na lista):**
 
 ```jsonc
 {
   "project": "opencode_chambers_harness",
+  "contractVersion": 2,
   "meta": {
     "version": 1,
     "project": "opencode_chambers_harness",
     "title": "OpenCode Chambers Harness",
     "updated_at": "2026-10-15T13:25:00-03:00"
   },
-  "tickets": [ /* Ticket[] validados */ ]
+  "tickets": [ /* Ticket sem `body`: id, title, status, priority, summary, order, created_at, completed_at */ ]
 }
 ```
+
+O `body` (markdown, potencialmente grande) é servido sob demanda em §2.4.1. Assim a listagem cresce com o **número** de tickets, não com o tamanho dos corpos, e um board acima de 2 MiB continua legível. O painel **deve** recusar `contractVersion` diferente de `2` com erro explícito de versão (lockstep, F7) em vez de renderizar um board vazio.
+
+**Precedência do campo (implementado no painel):** `contractVersion` presente e diferente de `2` (ex.: `1`, `3`, `"2"`) ⇒ erro `contract-version-mismatch` com as duas versões na mensagem e **nenhum card renderizado**. Campo **ausente** ⇒ host legado (pré-TICKET-HARNESS-88): o painel usa o `body` já embutido na listagem, sem chamar §2.4.1. A regressão é coberta por `tests/kanban_panel_v2_contract.test.ts` (casos v2, legado, `contractVersion: 3` e `413`).
 
 **Erros:**
 
@@ -216,6 +221,25 @@ Lê, parseia e valida o `kanban.json` do projeto. Retorna o documento canônico 
 | falha de I/O inesperada | `500` | `{ "error": { "code": "io-error", "message": "..." } }` |
 
 > Arquivo **ausente** = `200` com template vazio da §1.6 (fallback seguro). Não é `404`.
+
+### 2.4.1 `GET /api/kanban/ticket?project=:id&ticketId=:id`
+
+Devolve **um** ticket com o `body` completo, para o painel buscar ao expandir o card.
+
+**Query:** `project` e `ticketId` (ambos obrigatórios).
+
+**Resposta `200`:**
+
+```jsonc
+{ "project": "opencode_chambers_harness", "contractVersion": 2, "ticket": { /* Ticket completo, com `body` */ } }
+```
+
+| Situação | HTTP | `code` |
+|---|---|---|
+| `project` ausente | `400` | `missing-project` |
+| `ticketId` ausente | `400` | `missing-ticket` |
+| `project` fora da lista fixa | `404` | `unknown-project` |
+| `ticketId` inexistente no documento | `404` | `unknown-ticket` |
 
 ### 2.5 `POST /api/toggle`
 

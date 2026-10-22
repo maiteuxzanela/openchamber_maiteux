@@ -865,3 +865,16 @@ describe('actions, commands, and badge wire shapes', () => {
     expect(parseGuestMessage({ ...envelope, type: 'badge', id: 'b-1', payload: { count: 1.5 } })).toBeNull();
   });
 });
+
+test('request results carry a 2 MiB body and reject anything above it', () => {
+  const envelope = { channel: OPENCHAMBER_SDK_CHANNEL, v: OPENCHAMBER_SDK_API_VERSION };
+  const result = (length) => ({
+    ...envelope,
+    type: 'result',
+    id: 'r-1',
+    ok: true,
+    payload: { status: 200, body: 'x'.repeat(length) },
+  });
+  expect(hostMessageSchema.safeParse(result(2_097_152)).success).toBe(true);
+  expect(hostMessageSchema.safeParse(result(2_097_153)).success).toBe(false);
+});

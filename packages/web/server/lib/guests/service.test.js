@@ -38,6 +38,12 @@ http.createServer((req, res) => {
     res.end(JSON.stringify({ pong: true }));
     return;
   }
+  if (req.url === '/huge') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    // 2 MiB + 1 of valid JSON text: a whole answer blows the budget.
+    res.end('{"data":"' + 'x'.repeat(2097152) + '"}');
+    return;
+  }
   res.writeHead(404);
   res.end('missing');
 }).listen(port, '127.0.0.1');
@@ -123,6 +129,34 @@ describe('guest service proxy', () => {
       expect(getServiceStatus('docker')).toBe('ready');
       await stopGuestService('docker');
       expect(getServiceStatus('docker')).toBe('stopped');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses to truncate an answer above the response budget', async () => {
+    const { dir, persistPath, packageRoot } = await writeFixture();
+    try {
+      await setCapabilityGrants('docker', persistPath, ['service']);
+      const result = await proxyGuestServiceRequest({
+        guestId: 'docker',
+        packageRoot,
+        service: {
+          entry: 'service/main.js',
+          permissions: { exec: ['docker'] },
+        },
+        granted: ['service'],
+        persistPath,
+        method: 'GET',
+        path: '/huge',
+      });
+      // Never a sliced body that merely looks like JSON: a structured 413.
+      expect(result.status).toBe(413);
+      expect(result.body.length).toBeLessThan(1_024);
+      const parsed = JSON.parse(result.body);
+      expect(parsed.error.code).toBe('response-too-large');
+      expect(parsed.error.limit).toBe(2_097_152);
+      expect(parsed.error.received).toBeGreaterThan(2_097_152);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

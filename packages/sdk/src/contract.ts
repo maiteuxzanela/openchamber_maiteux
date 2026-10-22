@@ -367,7 +367,18 @@ export const GUEST_SESSION_AGENT_MAX = 80;
 export const GUEST_SETTING_VALUE_MAX = 2_000;
 export const GUEST_REQUEST_PATH_MAX = 2_000;
 export const GUEST_REQUEST_BODY_MAX = 64_000;
-export const GUEST_REQUEST_RESPONSE_MAX = 256_000;
+/**
+ * Ceiling, in characters, for a response a guest request or service request
+ * carries. A 290 KB Kanban board used to be silently truncated at 256 KB
+ * (TICKET-HARNESS-88), so the budget is 2 MiB: the board keeps reading whole
+ * while the sliced contract (list without `body`) keeps it small.
+ */
+export const GUEST_REQUEST_RESPONSE_MAX = 2_097_152;
+/**
+ * Soft threshold, in characters, where callers (CLI writers, panel) warn that
+ * a payload is approaching the 2 MiB ceiling. Warning never blocks a write.
+ */
+export const GUEST_REQUEST_RESPONSE_WARN = 1_572_864;
 export const GUEST_REQUEST_TIMEOUT_MS = 20_000;
 /** Guest file path, in characters. */
 export const GUEST_FILE_PATH_MAX = 1_024;

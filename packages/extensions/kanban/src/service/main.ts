@@ -26,6 +26,17 @@ if (!port || !token) {
 
 const MAX_BODY_BYTES = 64 * 1024;
 
+/**
+ * Wire contract version of the Kanban service (TICKET-HARNESS-88).
+ *
+ * v2 is the sliced contract: `GET /api/kanban` carries ticket metadata only
+ * and the markdown `body` is fetched per ticket. The panel refuses to render
+ * a response whose `contractVersion` it does not know, so an old panel and a
+ * new service (or the inverse) fail with an explicit version error instead of
+ * an empty board.
+ */
+const KANBAN_CONTRACT_VERSION = 2;
+
 class HttpError extends Error {
   readonly status: number;
   readonly code: string;
@@ -166,7 +177,30 @@ const listProjects = async (): Promise<{ projects: unknown[] }> => {
   return { projects };
 };
 
-const getKanban = async (url: URL): Promise<{ project: string; meta: KanbanDoc['meta']; tickets: KanbanTicket[] }> => {
+/** A ticket without its markdown body: what the board list actually needs. */
+type KanbanTicketMeta = Omit<KanbanTicket, 'body'>;
+
+const toTicketMeta = (ticket: KanbanTicket): KanbanTicketMeta => {
+  const { body: _body, ...meta } = ticket;
+  return meta;
+};
+
+interface KanbanListResult {
+  project: string;
+  contractVersion: typeof KANBAN_CONTRACT_VERSION;
+  meta: KanbanDoc['meta'];
+  tickets: KanbanTicketMeta[] | KanbanTicket[];
+}
+
+/**
+ * `GET /api/kanban?project=<id>` — the board, sliced (F5).
+ *
+ * The list is metadata only and stays bounded by the number of tickets, not by
+ * the size of their bodies, so a board above 2 MiB still reads. `includeBody=1`
+ * keeps a full-document escape hatch for debugging and tests only: it is what
+ * the panel must never need.
+ */
+const getKanban = async (url: URL): Promise<KanbanListResult> => {
   const requested = url.searchParams.get('project');
   if (requested === null || requested === '') {
     fail(400, 'missing-project', 'query parameter "project" is required');
@@ -176,7 +210,48 @@ const getKanban = async (url: URL): Promise<{ project: string; meta: KanbanDoc['
     fail(404, 'unknown-project', `unknown project: ${requested}`);
   }
   const doc = await readKanban(project);
-  return { project: project.id, meta: doc.meta, tickets: doc.tickets };
+  const includeBody = url.searchParams.get('includeBody') === '1';
+  return {
+    project: project.id,
+    contractVersion: KANBAN_CONTRACT_VERSION,
+    meta: doc.meta,
+    tickets: includeBody ? doc.tickets : doc.tickets.map(toTicketMeta),
+  };
+};
+
+interface KanbanTicketResult {
+  project: string;
+  contractVersion: typeof KANBAN_CONTRACT_VERSION;
+  ticket: KanbanTicket;
+}
+
+/**
+ * `GET /api/kanban/ticket?project=<id>&ticketId=<id>` — one ticket with its
+ * full markdown body, fetched when the user expands a card (F5).
+ */
+const getTicket = async (url: URL): Promise<KanbanTicketResult> => {
+  const requested = url.searchParams.get('project');
+  if (requested === null || requested === '') {
+    fail(400, 'missing-project', 'query parameter "project" is required');
+  }
+  const ticketId = url.searchParams.get('ticketId');
+  if (ticketId === null || ticketId === '') {
+    fail(400, 'missing-ticket', 'query parameter "ticketId" is required');
+  }
+  const project = findProject(requested);
+  if (!project) {
+    fail(404, 'unknown-project', `unknown project: ${requested}`);
+  }
+  const doc = await readKanban(project);
+  const ticket = doc.tickets.find((entry) => entry.id === ticketId);
+  if (!ticket) {
+    fail(404, 'unknown-ticket', `unknown ticket: ${ticketId}`);
+  }
+  return {
+    project: project.id,
+    contractVersion: KANBAN_CONTRACT_VERSION,
+    ticket,
+  };
 };
 
 interface TogglePayload {
@@ -299,6 +374,10 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
   if (req.method === 'GET' && url.pathname === '/api/kanban') {
     json(res, 200, await getKanban(url));
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/kanban/ticket') {
+    json(res, 200, await getTicket(url));
     return;
   }
   if (req.method === 'POST' && url.pathname === '/api/toggle') {

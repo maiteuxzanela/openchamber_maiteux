@@ -460,8 +460,14 @@ const integrationTests = async () => {
       const { tickets } = res.json;
       assert.equal(tickets.length, 5, 'two defective entries discarded, duplicate collapsed');
       for (const item of tickets) {
-        assert.ok(ticketSchema.safeParse(item).success, `invalid sanitized ticket ${JSON.stringify(item)}`);
+        assert.equal('body' in item, false, 'the sliced list must omit body (TICKET-HARNESS-88)');
+        assert.ok(ticketSchema.safeParse({ ...item, body: '' }).success, `invalid sanitized ticket ${JSON.stringify(item)}`);
       }
+
+      // The body still has to be reachable on demand.
+      const detail = await httpRequest(port, token, 'GET', `/api/kanban/ticket?project=${targetProject.id}&ticketId=KB-46-VALID`);
+      assert.equal(detail.status, 200, `body lookup failed: ${detail.raw}`);
+      assert.deepEqual(detail.json.ticket, corruptFixture().tickets[2], 'the on-demand body must match the document');
 
       const syn = tickets.find((item) => item.id === 'KB-46-SYN');
       assert.equal(syn.status, 'done');
@@ -473,7 +479,8 @@ const integrationTests = async () => {
       assert.equal(dirty.completed_at, null, 'open ticket must not keep a stale completed_at');
 
       const valid = tickets.find((item) => item.id === 'KB-46-VALID');
-      assert.deepEqual(valid, corruptFixture().tickets[2], 'canonical ticket must pass through untouched');
+      const { body: _canonicalBody, ...canonicalMeta } = corruptFixture().tickets[2];
+      assert.deepEqual(valid, canonicalMeta, 'canonical ticket fields must pass through untouched (body is served on demand)');
 
       const dup = tickets.find((item) => item.id === 'KB-46-DUP');
       assert.equal(dup.title, 'Primeiro', 'first duplicate must win');

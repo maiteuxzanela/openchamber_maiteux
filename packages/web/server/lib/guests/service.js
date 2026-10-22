@@ -8,12 +8,12 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 import {
-  GUEST_REQUEST_RESPONSE_MAX,
   GUEST_REQUEST_TIMEOUT_MS,
   isGuestRequestPath,
 } from '@openchamber/sdk';
 
 import { readExtensionStore, updateExtensionStore } from './persist.js';
+import { budgetRejection, readWithinBudget } from './response-budget.js';
 import { resolveServiceSocketEnv } from './sockets.js';
 
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -596,11 +596,14 @@ export const proxyGuestServiceRequest = async ({
     throw new GuestServiceError('Guest service request failed.', 'SERVICE_FAILED');
   }
 
-  const text = await response.text();
+  const budget = await readWithinBudget(response);
+  if (!budget.ok) {
+    // The guest service answered over budget: return a structured rejection
+    // instead of a prefix that the panel would try to JSON.parse.
+    return budgetRejection(budget);
+  }
   return {
     status: response.status,
-    body: text.length <= GUEST_REQUEST_RESPONSE_MAX
-      ? text
-      : text.slice(0, GUEST_REQUEST_RESPONSE_MAX),
+    body: budget.text,
   };
 };

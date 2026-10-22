@@ -6,6 +6,12 @@
  * §2/§4) and never touches the filesystem. Theme comes from `ready.theme`.
  *
  * Full-screen (`contributes.page`) and rail (300–420px) share this one bundle.
+ *
+ * TICKET-HARNESS-88 (contract v2): `GET /api/kanban` answers with a sliced list
+ * that carries no `body`, so the full description is fetched on demand by
+ * `GET /api/kanban/ticket` when a card is expanded. A host that answers with an
+ * explicit unfamiliar `contractVersion` is a lockstep failure and must surface
+ * as a version error — never as a silently empty board.
  */
 
 import {
@@ -30,7 +36,8 @@ type Ticket = {
   status: TicketStatus;
   priority: TicketPriority;
   summary: string;
-  body: string;
+  /** Absent in the v2 list; always present in the on-demand ticket endpoint. */
+  body?: string;
   order: number;
   created_at: string;
   completed_at: string | null;
@@ -49,8 +56,16 @@ type ProjectSummary = {
 
 type KanbanResponse = {
   project: string;
+  /** 2 = sliced list (no `body`). Absent on pre-TICKET-HARNESS-88 hosts. */
+  contractVersion?: number;
   meta: { version: number; project: string; title: string; updated_at: string };
   tickets: Ticket[];
+};
+
+type TicketResponse = {
+  project: string;
+  contractVersion?: number;
+  ticket: Ticket;
 };
 
 type ProjectsResponse = { projects: ProjectSummary[] };
@@ -71,6 +86,13 @@ const TAB_ALL = 'todos';
 const ALL_LABEL = 'Todos';
 
 /**
+ * Contract version this bundle speaks (TICKET-HARNESS-88 · F5/F7). Panel, host
+ * and SDK are built in lockstep; a host that advertises any other explicit
+ * version must fail loudly instead of rendering cards without their bodies.
+ */
+const CONTRACT_VERSION = 2;
+
+/**
  * `window` focus fires whenever the iframe regains focus — including the very
  * first `mousedown` of a click that enters the panel. Reloading on every focus
  * burned an extra `load()` per tab click and (before tabs were reconciled in
@@ -87,7 +109,7 @@ const FOCUS_RELOAD_COOLDOWN_MS = 1000;
  * or before the user grants it in Settings → Extensions.
  */
 const CANONICAL_PROJECTS: readonly ProjectSummary[] = [
-  { id: 'projeto_jev', title: 'agent_quality_guard', path: '/home/maiteuxzanela/projeto JEV', totalTickets: 0, openTickets: 0, doneTickets: 0 },
+  { id: 'projeto_jev', title: 'search-guard-agent', path: '/home/maiteuxzanela/search-guard-agent', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'jez_collections', title: 'JEZ Collections', path: '/mnt/94CCB337CCB3130A/JEZ collections', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'panela_sobra', title: 'Panela de Sobra', path: '/home/maiteuxzanela/PanelaBuild', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'faturamento_medico', title: 'Faturamento Médico', path: '/mnt/94CCB337CCB3130A/Faturamento', totalTickets: 0, openTickets: 0, doneTickets: 0 },
@@ -97,6 +119,15 @@ const CANONICAL_PROJECTS: readonly ProjectSummary[] = [
   { id: 'agent_dreams', title: 'Agent Dreams', path: '/home/maiteuxzanela/.config/opencode/plugins/opencode-plugin-dreams', totalTickets: 0, openTickets: 0, doneTickets: 0 },
   { id: 'cirurgic_search_mcp', title: 'cirurgic-search-mcp', path: '/home/maiteuxzanela/cirurgic-search-mcp', totalTickets: 0, openTickets: 0, doneTickets: 0 },
 ];
+
+/** Aliases de caminho para resolução resiliente de abas ativas */
+const PROJECT_PATH_ALIASES: Record<string, readonly string[]> = {
+  projeto_jev: [
+    '/home/maiteuxzanela/search-guard-agent',
+    '/home/maiteuxzanela/agent_quality_guard',
+    '/home/maiteuxzanela/projeto JEV',
+  ],
+};
 
 /**
  * Normalise a filesystem path for comparison: trim, drop trailing slashes
@@ -130,10 +161,16 @@ const resolveInitialTab = (
   if (normalizedDirectory === '') return TAB_ALL;
 
   for (const project of projects) {
-    const projectPath = normalizeProjectPath(project.path);
-    if (projectPath === '') continue;
-    if (normalizedDirectory === projectPath || normalizedDirectory.startsWith(`${projectPath}/`)) {
-      return project.id;
+    const candidatePaths = [
+      project.path,
+      ...(PROJECT_PATH_ALIASES[project.id] ?? []),
+    ];
+    for (const rawPath of candidatePaths) {
+      const projectPath = normalizeProjectPath(rawPath);
+      if (projectPath === '') continue;
+      if (normalizedDirectory === projectPath || normalizedDirectory.startsWith(`${projectPath}/`)) {
+        return project.id;
+      }
     }
   }
 
@@ -180,12 +217,32 @@ const describeError = (error: unknown): string => {
     }
   }
   if (error instanceof ApiError) {
+    if (error.code === 'response-too-large') {
+      return `${error.message} Peça um recorte menor (a lista sem descrições já é o padrão) e tente novamente.`;
+    }
     return error.message;
   }
   if (error instanceof Error) {
     return error.message;
   }
   return 'Erro inesperado ao consultar o serviço.';
+};
+
+/**
+ * Lockstep guard (TICKET-HARNESS-88 · F7). Only an explicitly advertised
+ * version is validated, so a legacy host (tickets carry `body` inline and omit
+ * the field) still works, while a mismatched modern host fails with an explicit
+ * version error instead of an empty board or `invalid-json`.
+ */
+const assertContractVersion = (payload: { contractVersion?: number }, route: string): void => {
+  if (payload.contractVersion === undefined) return;
+  if (payload.contractVersion !== CONTRACT_VERSION) {
+    throw new ApiError(
+      0,
+      'contract-version-mismatch',
+      `Contrato incompatível em ${route}: o serviço respondeu v${payload.contractVersion} e este painel fala v${CONTRACT_VERSION}. Recarregue o OpenChamber para alinhar painel e serviço (build lockstep).`,
+    );
+  }
 };
 
 const requestJson = async <T,>(host: HostClient, request: GuestRequest): Promise<T> => {
@@ -364,6 +421,12 @@ type State = {
   expanded: Set<string>;
   errors: Map<string, string>;
   pending: Set<string>;
+  /** F5: full `body` per card, fetched on demand from `/api/kanban/ticket`. */
+  bodies: Map<string, string>;
+  bodyLoading: Set<string>;
+  bodyErrors: Map<string, string>;
+  /** F6: per-project load failures, surfaced instead of silently omitted. */
+  projectErrors: Map<string, string>;
   loading: boolean;
   serviceError: string | null;
 };
@@ -404,6 +467,10 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
     expanded: new Set(),
     errors: new Map(),
     pending: new Set(),
+    bodies: new Map(),
+    bodyLoading: new Set(),
+    bodyErrors: new Map(),
+    projectErrors: new Map(),
     loading: false,
     serviceError: null,
   };
@@ -491,6 +558,15 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
   const scroll = document.createElement('div');
   scroll.className = 'kb-scroll';
 
+  /**
+   * F6 (TICKET-HARNESS-88): the aggregate tab merges six/eight independent
+   * requests; a project that fails must stay visible as a named warning. It is
+   * never dropped from the tab bar nor folded into a fake `0 abertos`.
+   */
+  const failureList = document.createElement('div');
+  failureList.className = 'kb-project-errors';
+  failureList.setAttribute('role', 'status');
+
   const list = document.createElement('div');
   list.className = 'kb-list';
 
@@ -512,7 +588,7 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
   const emptyBody = document.createElement('span');
   empty.append(emptyTitle, emptyBody);
 
-  scroll.append(list, separator, doneList, empty);
+  scroll.append(failureList, list, separator, doneList, empty);
   root.append(topbar, tabs, banner, scroll);
 
   /* ----- helpers ----- */
@@ -614,8 +690,14 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
     head.append(toggle, main, chevron);
 
     const setExpanded = (next: boolean): void => {
-      if (next) state.expanded.add(key);
-      else state.expanded.delete(key);
+      if (next) {
+        state.expanded.add(key);
+        // F5: the v2 list carries no `body`; fetch it on first expansion and
+        // cache it, so collapsing/expanding again never re-hits the service.
+        void ensureBody(ticket);
+      } else {
+        state.expanded.delete(key);
+      }
       render();
     };
     head.addEventListener('click', () => setExpanded(!state.expanded.has(key)));
@@ -646,13 +728,35 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
     if (expanded) {
       const body = document.createElement('div');
       body.className = 'kb-body';
-      if (ticket.body.trim() !== '') {
-        body.innerHTML = renderMarkdown(ticket.body);
+      const bodyError = state.bodyErrors.get(key);
+      if (state.bodyLoading.has(key)) {
+        const loading = document.createElement('p');
+        loading.className = 'kb-body-empty';
+        loading.textContent = 'Carregando descrição…';
+        body.append(loading);
+      } else if (bodyError) {
+        const alert = document.createElement('p');
+        alert.className = 'kb-card-error';
+        alert.textContent = `Não foi possível carregar a descrição: ${bodyError}`;
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'kb-body-retry';
+        retry.textContent = 'Tentar novamente';
+        retry.addEventListener('click', (event) => {
+          event.stopPropagation();
+          void ensureBody(ticket, { force: true });
+        });
+        body.append(alert, retry);
       } else {
-        const placeholder = document.createElement('p');
-        placeholder.className = 'kb-body-empty';
-        placeholder.textContent = 'Sem descrição.';
-        body.append(placeholder);
+        const source = state.bodies.get(key) ?? ticket.body ?? '';
+        if (source.trim() !== '') {
+          body.innerHTML = renderMarkdown(source);
+        } else {
+          const placeholder = document.createElement('p');
+          placeholder.className = 'kb-body-empty';
+          placeholder.textContent = 'Sem descrição.';
+          body.append(placeholder);
+        }
       }
       card.append(body);
     }
@@ -679,12 +783,45 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
       path: '/api/kanban',
       query: { project },
     });
+    assertContractVersion(data, '/api/kanban');
     const projectTitleValue = data.meta?.title || projectTitle(project);
     const tickets = Array.isArray(data.tickets) ? data.tickets : [];
     state.docs.set(
       project,
       tickets.map((ticket) => ({ ...ticket, project, projectTitle: projectTitleValue })),
     );
+  };
+
+  /**
+   * F5 (TICKET-HARNESS-88): fetches a single ticket's `body` on demand. Legacy
+   * payloads that still inline `body` short-circuit here (zero extra request);
+   * v2 lists go to `GET /api/kanban/ticket`. Errors are cached per card so a
+   * failing card does not retry in a loop — the user retries explicitly.
+   */
+  const ensureBody = async (ticket: TaggedTicket, options: { force?: boolean } = {}): Promise<void> => {
+    const key = cardKey(ticket);
+    if (ticket.body !== undefined && options.force !== true) {
+      state.bodies.set(key, ticket.body);
+      return;
+    }
+    if (!options.force && (state.bodies.has(key) || state.bodyLoading.has(key))) return;
+    state.bodyErrors.delete(key);
+    state.bodyLoading.add(key);
+    render();
+    try {
+      const data = await requestJson<TicketResponse>(host, {
+        method: 'GET',
+        path: '/api/kanban/ticket',
+        query: { project: ticket.project, ticketId: ticket.id },
+      });
+      assertContractVersion(data, '/api/kanban/ticket');
+      state.bodies.set(key, typeof data.ticket?.body === 'string' ? data.ticket.body : '');
+    } catch (error) {
+      state.bodyErrors.set(key, describeError(error));
+    } finally {
+      state.bodyLoading.delete(key);
+      render();
+    }
   };
 
   const load = async (): Promise<void> => {
@@ -698,12 +835,28 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
       if (state.activeTab === TAB_ALL) {
         const ids = projectList().map((project) => project.id);
         const results = await Promise.allSettled(ids.map((id) => loadProject(id)));
-        const rejected = results.filter((result) => result.status === 'rejected');
-        if (ids.length > 0 && rejected.length === ids.length) {
-          throw rejected[0]?.reason;
+        let failures = 0;
+        results.forEach((result, index) => {
+          const id = ids[index];
+          if (id === undefined) return;
+          if (result.status === 'rejected') {
+            failures += 1;
+            state.projectErrors.set(id, describeError(result.reason));
+          } else {
+            state.projectErrors.delete(id);
+          }
+        });
+        // F6: a partial failure is NOT silent anymore — only a total blackout
+        // escalates to the full-page error banner.
+        if (ids.length > 0 && failures === ids.length) {
+          const first = results.find(
+            (result): result is PromiseRejectedResult => result.status === 'rejected',
+          );
+          if (first) throw first.reason;
         }
       } else {
         await loadProject(state.activeTab);
+        state.projectErrors.delete(state.activeTab);
       }
     } catch (error) {
       state.serviceError = describeError(error);
@@ -768,6 +921,27 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
 
   const countTicket = (tickets: TaggedTicket[], status: TicketStatus): number =>
     tickets.filter((ticket) => ticket.status === status).length;
+
+  /** F6: projects whose `loadProject` rejected while the aggregate tab is open. */
+  const failureCount = (): number =>
+    state.activeTab === TAB_ALL ? state.projectErrors.size : 0;
+
+  const renderProjectFailures = (): void => {
+    failureList.textContent = '';
+    if (state.activeTab !== TAB_ALL) return;
+    for (const [id, message] of state.projectErrors) {
+      const row = document.createElement('div');
+      row.className = 'kb-project-error';
+      row.dataset['project'] = id;
+      row.setAttribute('role', 'alert');
+      const name = document.createElement('strong');
+      name.textContent = projectTitle(id);
+      const text = document.createElement('span');
+      text.textContent = `não carregou: ${message}`;
+      row.append(name, text);
+      failureList.append(row);
+    }
+  };
 
   const renderTabs = (tickets: TaggedTicket[]): void => {
     const items = tabItems();
@@ -870,12 +1044,20 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
     }
 
     const total = open.length + done.length;
+    const failed = failureCount();
     empty.hidden = total > 0 || state.loading;
     if (!empty.hidden) {
-      emptyTitle.textContent = state.serviceError ? 'Não foi possível carregar' : 'Nenhum ticket';
-      emptyBody.textContent = state.serviceError
-        ? 'Verifique o serviço da extensão e tente novamente.'
-        : 'Adicione tickets ao kanban.json deste projeto para vê-los aqui.';
+      if (state.serviceError) {
+        emptyTitle.textContent = 'Não foi possível carregar';
+        emptyBody.textContent = 'Verifique o serviço da extensão e tente novamente.';
+      } else if (failed > 0) {
+        // F6: never dress a failed load as an empty board.
+        emptyTitle.textContent = 'Carregamento parcial';
+        emptyBody.textContent = `${failed} projeto${failed === 1 ? '' : 's'} não carregou${failed === 1 ? '' : 'ram'}. Veja o aviso acima e tente novamente.`;
+      } else {
+        emptyTitle.textContent = 'Nenhum ticket';
+        emptyBody.textContent = 'Adicione tickets ao kanban.json deste projeto para vê-los aqui.';
+      }
     }
   };
 
@@ -886,13 +1068,20 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
 
     renderTabs(tickets);
     renderList(tickets);
+    renderProjectFailures();
 
     const activeLabel = state.activeTab === TAB_ALL ? ALL_LABEL : projectTitle(state.activeTab);
+    const failed = state.serviceError ? 0 : failureCount();
     const openCount = countTicket(tickets, 'open');
     const doneCount = countTicket(tickets, 'done');
+    const failureNote =
+      failed > 0 ? ` · ${failed} projeto${failed === 1 ? '' : 's'} com falha` : '';
     subtitle.textContent = state.loading
       ? `${activeLabel} · carregando…`
-      : `${activeLabel} · ${openCount} aberto${openCount === 1 ? '' : 's'} · ${doneCount} concluído${doneCount === 1 ? '' : 's'}`;
+      : state.serviceError
+        ? // F6: a failed load is never summarised as `0 abertos · 0 concluídos`.
+          `${activeLabel} · falha ao carregar`
+        : `${activeLabel} · ${openCount} aberto${openCount === 1 ? '' : 's'} · ${doneCount} concluído${doneCount === 1 ? '' : 's'}${failed > 0 ? ' (parcial)' : ''}${failureNote}`;
 
     refresh.disabled = state.loading;
     refresh.setAttribute('aria-busy', String(state.loading));
@@ -901,6 +1090,12 @@ const mount = (host: HostClient, root: HTMLElement, context: HostReadyContext): 
     if (state.serviceError) {
       banner.hidden = false;
       bannerText.textContent = state.serviceError;
+    } else if (failed > 0) {
+      // F6: partial failure is announced by name, never swallowed by the
+      // `Promise.allSettled` merge.
+      const names = [...state.projectErrors.keys()].map((id) => projectTitle(id)).join(', ');
+      banner.hidden = false;
+      bannerText.textContent = `Falha parcial ao carregar ${failed} projeto${failed === 1 ? '' : 's'} (${names}). Os demais projetos estão completos.`;
     } else {
       banner.hidden = true;
       bannerText.textContent = '';

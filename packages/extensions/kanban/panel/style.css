@@ -531,6 +531,51 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* ---------- On-demand body (TICKET-HARNESS-88 · F5) ---------- */
+
+.kb-body-retry {
+  appearance: none;
+  margin-top: 8px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: var(--oc-error-text, #ff8a8a);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.kb-body-retry:hover {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+/* ---------- Partial failure per project (TICKET-HARNESS-88 · F6) ---------- */
+
+.kb-project-errors:empty {
+  display: none;
+}
+
+.kb-project-error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin: 8px var(--kb-pad, 12px) 0;
+  padding: 8px 10px;
+  border-radius: var(--kb-radius, 8px);
+  border: 1px solid var(--oc-warning, #b8860b);
+  background: color-mix(in srgb, var(--oc-warning, #b8860b) 14%, transparent);
+  color: var(--oc-warning-text, #e0b341);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.kb-project-error strong {
+  font-weight: 600;
+}
+
 /* ---------- Expanded body (markdown) ---------- */
 
 .kb-body {

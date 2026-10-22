@@ -63,6 +63,8 @@ const PROJECTS = [
   { id: 'predictera', title: 'Predictera', file: '/mnt/94CCB337CCB3130A/predictera/kanban.json' },
   { id: 'opencode_chambers_harness', title: 'OpenCode Chambers Harness', file: '/mnt/94CCB337CCB3130A/opencode_chambers_harness/kanban.json' },
   { id: 'ensemble_room_lowcost', title: 'Ensemble Hardened', file: '/mnt/94CCB337CCB3130A/ensemble-room-lowcost/kanban.json' },
+  { id: 'agent_dreams', title: 'Agent Dreams', file: '/home/maiteuxzanela/.config/opencode/plugins/opencode-plugin-dreams/kanban.json' },
+  { id: 'cirurgic_search_mcp', title: 'cirurgic-search-mcp', file: '/home/maiteuxzanela/cirurgic-search-mcp/kanban.json' },
 ] as const;
 
 const CLI_PROJECTS = PROJECTS.map((project) => ({ id: project.id, title: project.title }));

@@ -1,5 +1,4 @@
 import {
-  GUEST_REQUEST_RESPONSE_MAX,
   GUEST_REQUEST_TIMEOUT_MS,
   isGuestRequestPath,
   resolveIntegrationApi,
@@ -8,6 +7,7 @@ import {
 import { dropGuestTokens } from './auth-store.js';
 import { resolveHostAccessToken } from './host-session.js';
 import { GuestOAuthError, guestAuthorizationHeader, refreshGuestAccessToken, takeUsableGuestAuth } from './oauth.js';
+import { budgetRejection, readWithinBudget } from './response-budget.js';
 
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -33,14 +33,6 @@ export const joinGuestRequestUrl = (apiOrigin, path, query) => {
     }
   }
   return url;
-};
-
-const readCappedBody = async (response) => {
-  const text = await response.text();
-  if (text.length <= GUEST_REQUEST_RESPONSE_MAX) {
-    return text;
-  }
-  return text.slice(0, GUEST_REQUEST_RESPONSE_MAX);
 };
 
 const sendAuthorized = async (url, method, body, accessToken, authorization) => {
@@ -105,8 +97,14 @@ export const proxyGuestRequest = async ({ guest, persistPath, method, path, quer
     }
   }
 
+  const budget = await readWithinBudget(response);
+  if (!budget.ok) {
+    // Never hand a sliced body back: the guest must see a structured
+    // rejection it can explain, not a payload that merely looks valid.
+    return budgetRejection(budget);
+  }
   return {
     status: response.status,
-    body: await readCappedBody(response),
+    body: budget.text,
   };
 };
