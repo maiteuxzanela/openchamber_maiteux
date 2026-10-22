@@ -8,6 +8,8 @@ declare global {
     __OPENCHAMBER_ELECTRON__?: { runtime?: string; arch?: string; trayEnabled?: boolean };
     __OPENCHAMBER_PLATFORM__?: string;
     __OPENCHAMBER_DESKTOP_BOOT_OUTCOME__?: DesktopBootOutcome;
+    /** Last RSS sample the GTK shell published before `openchamber:memory-pressure`. */
+    __OPENCHAMBER_MEMORY_PRESSURE__?: unknown;
   }
 
   interface WebviewElement extends HTMLElement {

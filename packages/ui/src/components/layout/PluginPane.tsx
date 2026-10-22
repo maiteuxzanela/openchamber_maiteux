@@ -60,6 +60,7 @@ import { readGuestWorkspace, observeGuestWorkspace, openGuestSession } from '@/l
 import { guestStorageOperation } from '@/lib/guests/storage';
 import { showGuestToast } from '@/lib/guests/toast';
 import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { registerHiddenSurfaceDropper } from '@/lib/memory-pressure';
 import { openExternalUrl } from '@/lib/url';
 import { cn } from '@/lib/utils';
 import { closeGuestTabsEverywhere } from '@/lib/guests/tabs';
@@ -84,6 +85,13 @@ type PluginPaneProps = {
    */
   headless?: boolean;
   backgroundAction?: GuestBackgroundAction;
+  /**
+   * Whether this pane is the one the user is looking at. The context panel
+   * keeps every plugin tab mounted and hides the inactive ones with CSS, which
+   * leaves their documents (and JS heaps) alive; only a pane that reports
+   * `active === false` may be dropped under memory pressure.
+   */
+  active?: boolean;
   onDismiss?: () => void;
   onAttach?: (issue: AttachIssueRequest) => void;
   onSessionStarted?: () => void;
@@ -121,6 +129,7 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   item: itemProp,
   headless = false,
   backgroundAction,
+  active = true,
   onDismiss,
   onAttach,
   onSessionStarted,
@@ -152,6 +161,64 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     setRailItem(takePendingItem(guestId));
   }, [guestId, headless, itemProp, pendingItem, takePendingItem]);
   const item = headless ? null : itemProp !== undefined ? itemProp : railItem;
+  // The document is detached while hidden and reloaded when the tab is shown
+  // again; the generation forces React to build a fresh iframe element, because
+  // the imperative about:blank navigation is invisible to its virtual DOM.
+  const [frameSuspended, setFrameSuspended] = React.useState(false);
+  const [frameGeneration, setFrameGeneration] = React.useState(0);
+  const frameSuspendedRef = React.useRef(false);
+  const activeRef = React.useRef(active);
+  activeRef.current = active;
+
+  const detachFrameDocument = React.useCallback((): boolean => {
+    const frame = iframeRef.current;
+    if (!frame) return false;
+    try {
+      // Replacing the document with about:blank makes WebKitGTK destroy the
+      // guest's JS context and page-cache entry now, instead of keeping a
+      // multi-megabyte heap for a frame that may never be shown again.
+      frame.setAttribute('src', 'about:blank');
+      frame.removeAttribute('srcdoc');
+    } catch {
+      // Detached node: removal below already balances the frame.
+    }
+    try {
+      frame.contentWindow?.location.replace('about:blank');
+    } catch {
+      // Sandboxed (opaque origin) frame refuses location access; src is enough.
+    }
+    return true;
+  }, []);
+
+  const suspendHiddenFrame = React.useCallback((): boolean => {
+    // The pane the user is looking at keeps its state: drafts, scroll and the
+    // guest's own session survive a purge. A running background action is work
+    // in progress and also survives.
+    if (activeRef.current) return false;
+    if (backgroundAction?.isActive()) return false;
+    if (frameSuspendedRef.current) return false;
+    frameSuspendedRef.current = true;
+    detachFrameDocument();
+    setFrameSuspended(true);
+    setFrameGeneration((generation) => generation + 1);
+    return true;
+  }, [backgroundAction, detachFrameDocument]);
+
+  // A hidden tab was dropped: mounting it again must load a fresh document, not
+  // the blank one the purge left behind.
+  React.useEffect(() => {
+    if (!active || !frameSuspendedRef.current) return;
+    frameSuspendedRef.current = false;
+    setFrameSuspended(false);
+  }, [active]);
+
+  React.useEffect(() => {
+    // Headless frames belong to a command or action in flight, not to a tab the
+    // user can hide: their lifecycle is owned by the background action.
+    if (headless) return;
+    return registerHiddenSurfaceDropper(`plugin:${guestId}`, suspendHiddenFrame);
+  }, [guestId, headless, suspendHiddenFrame]);
+
   // The user opened this guest's panel: whatever it counted is seen.
   const clearBadge = useGuestBadgeStore((state) => state.clearBadge);
   React.useEffect(() => {
@@ -319,7 +386,32 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
       waiter({ ok: false, reason: 'unavailable' });
     }
     resolveWaitersRef.current.clear();
-  }, [frameKey, src, srcDoc]);
+  }, [frameKey, frameSuspended, src, srcDoc]);
+
+  // React removes (or swaps) the iframe node on unmount and whenever the frame
+  // key changes; blanking first is what makes WebKit discard the document
+  // instead of parking it in the page cache. Strict Mode re-runs this effect on
+  // mount over the same node, which is why a document blanked by the throwaway
+  // cleanup is replaced by a generation bump; a real key swap already builds a
+  // new element, so it only needs the blank.
+  const blankedFrameRef = React.useRef<HTMLIFrameElement | null>(null);
+  React.useLayoutEffect(() => {
+    const blanked = blankedFrameRef.current;
+    if (blanked) {
+      blankedFrameRef.current = null;
+      if (iframeRef.current === blanked) {
+        setFrameGeneration((generation) => generation + 1);
+      }
+    }
+    return () => {
+      // The ref is read at cleanup time on purpose: a generation bump may have
+      // swapped the element since this effect was set up, and the node being
+      // removed is the one that must be blanked.
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
+      const node = iframeRef.current;
+      if (node && detachFrameDocument()) blankedFrameRef.current = node;
+    };
+  }, [detachFrameDocument, frameKey]);
 
   const pushHostState = React.useCallback(() => {
     postToGuest(buildReadyMessage(readyRef.current));
@@ -659,10 +751,17 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     return null;
   }
 
+  if (frameSuspended) {
+    // A hidden tab whose document was released by a memory-pressure purge.
+    // Nothing is rendered until the tab is shown again and the effect above
+    // restores the frame.
+    return <div aria-hidden="true" className="h-full w-full min-h-0 min-w-0" />;
+  }
+
   return (
     <iframe
       ref={iframeRef}
-      key={frameKey}
+      key={`${frameKey}:${frameGeneration}`}
       title={guest.name}
       src={src || undefined}
       srcDoc={srcDoc}
