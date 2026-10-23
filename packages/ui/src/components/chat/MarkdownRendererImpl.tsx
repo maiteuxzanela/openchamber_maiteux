@@ -1,4 +1,5 @@
 import React from 'react';
+import { registerEphemeralCache } from '@/lib/memory-pressure';
 import morphdom from 'morphdom';
 import { renderMermaidASCII, renderMermaidSVG } from 'beautiful-mermaid';
 import type { Part } from '@opencode-ai/sdk/v2';
@@ -1368,3 +1369,10 @@ export const SimpleMarkdownRenderer = React.memo(SimpleMarkdownRendererImpl, (pr
     && prev.allowMermaidWheelEvents === next.allowMermaidWheelEvents
     && prev.enableFileReferences === next.enableFileReferences;
 });
+
+/** Laid-out diagrams are memoized SVGs; under memory pressure they are rebuilt. */
+const clearMermaidRenderCache = (): void => {
+  MERMAID_RENDER_CACHE.clear();
+};
+
+registerEphemeralCache('markdown:mermaid', clearMermaidRenderCache);

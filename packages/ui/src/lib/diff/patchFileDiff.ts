@@ -6,6 +6,7 @@ import {
   type AnnotationSide,
   type FileDiffMetadata,
 } from '@pierre/diffs';
+import { registerEphemeralCache } from '@/lib/memory-pressure';
 
 const PATCH_DIFF_CACHE_LIMIT = 64;
 const DEFAULT_PATCH_CONTEXT_LINES = 3;
@@ -210,3 +211,10 @@ export const getPatchHunkAnchors = (patch: string): PatchHunkAnchor[] => {
   }
   return anchors;
 };
+
+/** Parsed diffs are large and reproducible from the patch text. */
+export const clearPatchFileDiffCache = (): void => {
+  patchFileDiffCache.clear();
+};
+
+registerEphemeralCache('diff:patches', clearPatchFileDiffCache);

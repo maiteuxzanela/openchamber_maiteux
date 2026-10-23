@@ -1422,7 +1422,7 @@ export const ContextPanel: React.FC = () => {
               className={cn('absolute inset-0', activeTab?.id === tab.id ? 'block' : 'hidden')}
             >
               <React.Suspense fallback={null}>
-                <PluginPane mode={tab.mode} />
+                <PluginPane mode={tab.mode} active={Boolean(isOpen) && activeTab?.id === tab.id} />
               </React.Suspense>
             </div>
           );

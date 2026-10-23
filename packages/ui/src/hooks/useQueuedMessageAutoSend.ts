@@ -8,9 +8,8 @@ import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { queuedContextToParts } from '@/components/chat/composer/submit/buildOutgoingMessage';
 import { getDirectoryState } from '@/sync/sync-refs';
 import { useDirectorySync } from '@/sync/sync-context';
-import { useStreamingStore } from '@/sync/streaming';
 import { useGlobalSessionStatusStore } from '@/sync/global-session-status';
-import { STALE_PENDING_ASSISTANT_TIMEOUT_MS } from '@/hooks/useSessionActivity';
+import { resolvePendingAssistantEvidence } from '@/lib/session-staleness';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { createInputHistorySubmission } from '@/stores/useInputHistoryStore';
@@ -184,59 +183,77 @@ export const shouldDispatchQueuedAutoSend = (
     && currentStatusType === 'idle';
 };
 
+export type QueuedSessionStatusSource = 'authoritative' | 'pending-assistant' | 'none';
+
+export interface ResolvedQueuedSessionStatus {
+  type: SessionStatusType;
+  source: QueuedSessionStatusSource;
+  /**
+   * When the fallback busy expires (lastUpdate + timeout). The queue gate
+   * schedules one wake at this instant; `null` means no timer is needed —
+   * either the backend status is authoritative or the session is idle.
+   */
+  retryAt: number | null;
+}
+
 /**
  * Resolve the live status the queue gate should honor for a session.
  *
  * The server's `/session/status` map only lists busy/retry sessions — idle
  * sessions are absent — so a missing entry means "idle per the snapshot", not
  * "no information". A missed busy event therefore leaves no entry while a turn
- * is still streaming. The trailing in-flight assistant message is the live
- * evidence of that running turn: treat it as busy so the queue never dispatches
- * into it (mirrors `useSessionActivity`'s fallback). The entry becomes idle the
- * moment the message completes or an idle status event lands. This reads the
- * directory child store directly so both the effect-loop gate and the
- * dispatch-time re-check agree.
+ * is still running. The trailing assistant message is the durable evidence of
+ * that turn: it is busy only while its last update is inside the shared
+ * freshness window. The streaming flag is intentionally ignored — when SSE
+ * dies the flag is orphaned and would pin the queue forever.
+ *
+ * This reads the directory child store directly so both the effect-loop gate
+ * and the dispatch-time re-check agree. `now` is injected so the caller (and
+ * tests) control the clock.
  */
-export const resolveQueuedSessionStatusType = (
+export const resolveQueuedSessionStatus = (
   sessionId: string,
   directory?: string,
-): SessionStatusType => {
+  now: number = Date.now(),
+): ResolvedQueuedSessionStatus => {
   const state = getDirectoryState(directory);
   const statusType = state?.session_status?.[sessionId]?.type
     ?? useGlobalSessionStatusStore.getState().statusById.get(sessionId)?.status?.type;
   if (statusType === 'busy' || statusType === 'retry' || statusType === 'idle') {
-    // The backend status is authoritative: an explicit 'idle' must win over
-    // the trailing-message fallback below, otherwise a residual in-flight
-    // assistant message without a completion timestamp would hold the queue
-    // for up to STALE_PENDING_ASSISTANT_TIMEOUT_MS (10s).
-    return statusType;
+    // The backend status is authoritative: an explicit 'idle' wins over the
+    // trailing-message fallback, and a busy/retry entry never arms a timer.
+    return { type: statusType, source: 'authoritative', retryAt: null };
   }
-  const sessionMessages = state?.message?.[sessionId];
-  const lastMessage = sessionMessages && sessionMessages.length > 0
-    ? sessionMessages[sessionMessages.length - 1]
-    : undefined;
-  if (
-    lastMessage?.role === 'assistant'
-    && typeof (lastMessage as { time?: { completed?: number } }).time?.completed !== 'number'
-    && !(lastMessage as { finish?: unknown }).finish
-  ) {
-    const isStreaming = Boolean(
-      useStreamingStore.getState().streamingMessageIds.get(sessionId) === lastMessage.id
-    );
-    if (isStreaming) {
-      return 'busy';
-    }
-    const lastTime = (lastMessage as { time?: { updated?: number; created?: number } }).time;
-    const rawTimestamp = lastTime?.updated ?? lastTime?.created;
-    if (typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp)) {
-      const timestampMs = rawTimestamp < 1e10 ? rawTimestamp * 1000 : rawTimestamp;
-      if (timestampMs > 1e10 && (Date.now() - timestampMs) > STALE_PENDING_ASSISTANT_TIMEOUT_MS) {
-        return 'idle';
-      }
-    }
-    return 'busy';
+
+  const evidence = resolvePendingAssistantEvidence(state?.message?.[sessionId], now);
+  if (evidence.kind === 'pending') {
+    return { type: 'busy', source: 'pending-assistant', retryAt: evidence.expiresAt };
   }
-  return 'idle';
+  if (evidence.kind === 'stale') {
+    return { type: 'idle', source: 'pending-assistant', retryAt: null };
+  }
+  return { type: 'idle', source: 'none', retryAt: null };
+};
+
+/** Thin backwards-compatible wrapper: consumers and tests keep reading a type. */
+export const resolveQueuedSessionStatusType = (
+  sessionId: string,
+  directory?: string,
+  now: number = Date.now(),
+): SessionStatusType => resolveQueuedSessionStatus(sessionId, directory, now).type;
+
+/**
+ * Arm the single staleness wake for a resolved fallback-busy status. The
+ * scheduler dedupes by earliest deadline, so repeated effect passes move the
+ * deadline at most once and never create a polling loop.
+ */
+export const scheduleQueuedStalenessWake = (
+  scheduler: Pick<ReturnType<typeof createQueuedAutoSendRetryScheduler>, 'schedule'>,
+  resolved: ResolvedQueuedSessionStatus,
+): void => {
+  if (resolved.retryAt !== null) {
+    scheduler.schedule(resolved.retryAt);
+  }
 };
 
 export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?: boolean }) {
@@ -291,8 +308,11 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
         return;
       }
 
-      const currentStatus = resolveQueuedSessionStatusType(sessionId, target.directory);
-      if (currentStatus !== 'idle') {
+      const currentStatus = resolveQueuedSessionStatus(sessionId, target.directory);
+      if (currentStatus.type !== 'idle') {
+        // Fallback busy: wake the queue when the evidence expires. Authoritative
+        // busy carries retryAt === null, so the backend status stays in charge.
+        scheduleQueuedStalenessWake(retryScheduler, currentStatus);
         return;
       }
 
@@ -369,7 +389,11 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
       const target = parseMessageQueueKey(key);
       if (!target || target.runtimeKey !== getRuntimeKey()) return;
       const { sessionId } = target;
-      const currentStatusType = resolveQueuedSessionStatusType(sessionId, target.directory);
+      const resolvedStatus = resolveQueuedSessionStatus(sessionId, target.directory);
+      const currentStatusType = resolvedStatus.type;
+      // Arm the one-shot staleness wake so an orphaned streaming flag cannot
+      // hold the queue past the freshness window. Deduped by the scheduler.
+      scheduleQueuedStalenessWake(retryScheduler, resolvedStatus);
       const previousStatusType = previousStatusRef.current.get(sessionId);
       const wasAutoReviewBlocked = autoReviewBlockedSessionsRef.current.has(sessionId);
       const isAutoReviewRunning = useAutoReviewStore.getState().isRunningForSession(sessionId);

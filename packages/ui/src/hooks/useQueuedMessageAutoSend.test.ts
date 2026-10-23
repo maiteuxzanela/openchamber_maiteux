@@ -4,6 +4,7 @@ import type { QueuedMessage } from '../stores/messageQueueStore';
 import { ChildStoreManager } from '@/sync/child-store';
 import { setSyncRefs } from '@/sync/sync-refs';
 import { useStreamingStore } from '@/sync/streaming';
+import { useDirectoryStore } from '@/stores/useDirectoryStore';
 
 let visibleAgents: Agent[] = [];
 const sendMessageCalls: unknown[][] = [];
@@ -35,10 +36,13 @@ import {
   createQueuedAutoSendRetryScheduler,
   getQueuedAutoSendRetryDelayMs,
   isQueuedAutoSendBackedOff,
+  resolveQueuedSessionStatus,
   resolveQueuedSessionStatusType,
+  scheduleQueuedStalenessWake,
   sendQueuedAutoSendPayload,
   shouldDispatchQueuedAutoSend,
 } from './useQueuedMessageAutoSend';
+import { STALE_PENDING_ASSISTANT_TIMEOUT_MS } from '@/lib/session-staleness';
 
 describe('queued auto-send retry scheduler', () => {
   test('wakes the queue when backoff expires', () => {
@@ -126,11 +130,11 @@ describe('queued auto-send retry backoff', () => {
 describe('resolveQueuedSessionStatusType', () => {
   const DIRECTORY = '/repo';
 
-  const assistantMessage = (id: string, completed?: number): Message => ({
+  const assistantMessage = (id: string, completed?: number, created: number = Date.now() - 1_000): Message => ({
     id,
     role: 'assistant',
     sessionID: 'ses_1',
-    time: { created: 1, ...(completed !== undefined ? { completed } : {}) },
+    time: { created, ...(completed !== undefined ? { completed } : {}) },
   } as Message);
 
   let childStores: ChildStoreManager;
@@ -189,7 +193,7 @@ describe('resolveQueuedSessionStatusType', () => {
     expect(resolveQueuedSessionStatusType('ses_1', DIRECTORY)).toBe('idle');
   });
 
-  test('resolves idle when trailing assistant message is stale (>10s old) and not streaming', () => {
+  test('resolves idle when trailing assistant message is stale (>10s old)', () => {
     const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
     const staleMsg: Message = {
       id: 'msg_stale',
@@ -201,24 +205,165 @@ describe('resolveQueuedSessionStatusType', () => {
     expect(resolveQueuedSessionStatusType('ses_1', DIRECTORY)).toBe('idle');
   });
 
-  test('resolves busy when trailing assistant message is actively streaming', () => {
+  test('drains the queue on an orphaned streaming flag without touching the current directory', () => {
+    // Scenario: the SSE connection died mid-turn, so `streamingMessageIds`
+    // never cleared while the message timestamp stopped moving. The flag is
+    // orphaned; the queue must drain at the freshness deadline and the
+    // directory that owns the queue must stay exactly where it was.
+    const now = 100_000_000_000;
     const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
-    const streamingMsg: Message = {
-      id: 'msg_stream_active',
-      role: 'assistant',
-      sessionID: 'ses_1',
-      time: { created: Date.now() - 25_000 },
-    } as Message;
-    store.setState({ message: { ses_1: [streamingMsg] } });
+    store.setState({
+      message: {
+        ses_1: [{
+          id: 'msg_stream_orphan',
+          role: 'assistant',
+          sessionID: 'ses_1',
+          time: { created: now - (STALE_PENDING_ASSISTANT_TIMEOUT_MS + 5_000) },
+        } as unknown as Message],
+      },
+    });
     useStreamingStore.setState({
-      streamingMessageIds: new Map([['ses_1', 'msg_stream_active']]),
+      streamingMessageIds: new Map([['ses_1', 'msg_stream_orphan']]),
       messageStreamStates: new Map(),
     });
-    expect(resolveQueuedSessionStatusType('ses_1', DIRECTORY)).toBe('busy');
-    useStreamingStore.setState({
-      streamingMessageIds: new Map(),
-      messageStreamStates: new Map(),
+    const previousDirectory = useDirectoryStore.getState().currentDirectory;
+    useDirectoryStore.setState({ currentDirectory: DIRECTORY });
+
+    try {
+      const resolved = resolveQueuedSessionStatus('ses_1', DIRECTORY, now);
+      expect(resolved).toEqual({ type: 'idle', source: 'pending-assistant', retryAt: null });
+      expect(resolved.type).toBe(resolveQueuedSessionStatusType('ses_1', DIRECTORY, now));
+      // Busy → idle with queued items is the dispatch trigger.
+      expect(shouldDispatchQueuedAutoSend('busy', resolved.type, true)).toBe(true);
+      // A stale session needs no wake: the queue drains now, not later.
+      const scheduled: number[] = [];
+      const scheduler = createQueuedAutoSendRetryScheduler(
+        () => { throw new Error('stale evidence must not arm a wake'); },
+        () => now,
+        (_callback, delay) => {
+          scheduled.push(delay);
+          return 1 as unknown as ReturnType<typeof setTimeout>;
+        },
+        () => undefined,
+      );
+      scheduleQueuedStalenessWake(scheduler, resolved);
+      expect(scheduled).toEqual([]);
+      // Draining never mutates the session's directory.
+      expect(useDirectoryStore.getState().currentDirectory).toBe(DIRECTORY);
+    } finally {
+      useDirectoryStore.setState({ currentDirectory: previousDirectory });
+      useStreamingStore.setState({
+        streamingMessageIds: new Map(),
+        messageStreamStates: new Map(),
+      });
+    }
+  });
+
+  test('arms exactly one wake for a fallback busy, at lastUpdate + timeout', () => {
+    const now = 100_000_000_000;
+    const lastUpdate = now - 4_000;
+    const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
+    store.setState({
+      message: {
+        ses_1: [{
+          id: 'msg_fresh',
+          role: 'assistant',
+          sessionID: 'ses_1',
+          time: { created: now - 60_000, updated: lastUpdate },
+        } as unknown as Message],
+      },
     });
+
+    const resolved = resolveQueuedSessionStatus('ses_1', DIRECTORY, now);
+    expect(resolved).toEqual({
+      type: 'busy',
+      source: 'pending-assistant',
+      retryAt: lastUpdate + STALE_PENDING_ASSISTANT_TIMEOUT_MS,
+    });
+
+    const delays: number[] = [];
+    let timers = 0;
+    const scheduler = createQueuedAutoSendRetryScheduler(
+      () => undefined,
+      () => now,
+      (_callback, delay) => {
+        timers += 1;
+        delays.push(delay);
+        return timers as unknown as ReturnType<typeof setTimeout>;
+      },
+      () => undefined,
+    );
+    // Repeated effect passes must not spawn a polling loop.
+    scheduleQueuedStalenessWake(scheduler, resolved);
+    scheduleQueuedStalenessWake(scheduler, resolved);
+    scheduleQueuedStalenessWake(scheduler, resolved);
+    expect(delays).toEqual([STALE_PENDING_ASSISTANT_TIMEOUT_MS - 4_000]);
+    expect(timers).toBe(1);
+  });
+
+  test('never arms a wake for an authoritative busy or retry status', () => {
+    const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
+    const scheduled: number[] = [];
+    const scheduler = createQueuedAutoSendRetryScheduler(
+      () => undefined,
+      () => 0,
+      (_callback, delay) => {
+        scheduled.push(delay);
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      },
+      () => undefined,
+    );
+
+    store.setState({ session_status: { ses_1: { type: 'busy' } } });
+    const busy = resolveQueuedSessionStatus('ses_1', DIRECTORY);
+    expect(busy).toEqual({ type: 'busy', source: 'authoritative', retryAt: null });
+    scheduleQueuedStalenessWake(scheduler, busy);
+
+    store.setState({ session_status: { ses_1: { type: 'retry', attempt: 1, message: 'boom', next: 30 } } });
+    const retry = resolveQueuedSessionStatus('ses_1', DIRECTORY);
+    expect(retry).toEqual({ type: 'retry', source: 'authoritative', retryAt: null });
+    scheduleQueuedStalenessWake(scheduler, retry);
+
+    expect(scheduled).toEqual([]);
+  });
+
+  test('keeps a long legitimate turn busy while real updates keep landing', () => {
+    const now = 100_000_000_000;
+    const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
+    store.setState({
+      message: {
+        ses_1: [{
+          id: 'msg_long_turn',
+          role: 'assistant',
+          sessionID: 'ses_1',
+          time: { created: now - 90_000, updated: now - 2_000 },
+        } as unknown as Message],
+      },
+    });
+
+    const resolved = resolveQueuedSessionStatus('ses_1', DIRECTORY, now);
+    expect(resolved.type).toBe('busy');
+    expect(resolved.source).toBe('pending-assistant');
+    expect(resolved.retryAt).toBe(now - 2_000 + STALE_PENDING_ASSISTANT_TIMEOUT_MS);
+  });
+
+  test('drains immediately when the trailing assistant message completes', () => {
+    const now = 100_000_000_000;
+    const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
+    store.setState({
+      message: {
+        ses_1: [{
+          id: 'msg_completed',
+          role: 'assistant',
+          sessionID: 'ses_1',
+          time: { created: now - 2_000, updated: now - 1_000, completed: now - 500 },
+        } as unknown as Message],
+      },
+    });
+
+    const resolved = resolveQueuedSessionStatus('ses_1', DIRECTORY, now);
+    expect(resolved).toEqual({ type: 'idle', source: 'none', retryAt: null });
+    expect(shouldDispatchQueuedAutoSend('busy', resolved.type, true)).toBe(true);
   });
 });
 

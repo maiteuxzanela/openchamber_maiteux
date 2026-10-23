@@ -1,4 +1,5 @@
 import type { ChatMessageEntry, TurnProjectionResult } from './types';
+import { registerEphemeralCache } from '@/lib/memory-pressure';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
 
@@ -80,3 +81,13 @@ export const setCachedProjection = (
   }
   projectionCache.set(key, projection);
 };
+
+/**
+ * Projections hold whole message arrays; under desktop memory pressure they are
+ * derived data, rebuilt from the session on the next render.
+ */
+export const clearProjectionCache = (): void => {
+  projectionCache.clear();
+};
+
+registerEphemeralCache('chat:turn-projections', clearProjectionCache);

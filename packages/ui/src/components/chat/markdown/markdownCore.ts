@@ -5,6 +5,7 @@ import katex from 'katex';
 import DOMPurify from 'dompurify';
 import { buildAgentMentionUrl, parseAgentHref, parseSkillHref } from '@/lib/messages/inlineMessageLinks';
 import { isAppLinkUrl } from '@/lib/url';
+import { registerEphemeralCache } from '@/lib/memory-pressure';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { contentFingerprint, HighlightResultCache, utf16Bytes } from './highlightResultCache';
 import { highlightCodeInWorker } from './markdown-worker';
@@ -787,3 +788,18 @@ export const renderMarkdownBlocks = async (
     }),
   );
 };
+
+/**
+ * Rendered block HTML is the biggest JS-heap cache in the chat (24 MiB of
+ * settled blocks). It is derived data: a purge costs one re-highlight per
+ * visible block, and the desktop shell's memory pressure is the moment to pay
+ * that instead of being recycled with the whole renderer.
+ */
+export const clearMarkdownRenderCaches = (): void => {
+  fullBlockCache.clear();
+  liveBlockCache.clear();
+  markdownImageCandidateCache.clear();
+  markdownImageCandidateCacheBytes = 0;
+};
+
+registerEphemeralCache('markdown:render', clearMarkdownRenderCaches);

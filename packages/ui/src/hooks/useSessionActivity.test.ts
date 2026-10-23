@@ -59,7 +59,7 @@ describe('determineSessionActivity', () => {
     expect(result.isBusy).toBe(true);
   });
 
-  test('treats stale trailing assistant message (>10s old) as idle when status is missing and not streaming', () => {
+  test('treats stale trailing assistant message (>10s old) as idle when status is missing', () => {
     const now = 100_000_000_000;
     const result = determineSessionActivity({
       sessionId: 'ses_1',
@@ -73,12 +73,33 @@ describe('determineSessionActivity', () => {
     expect(result.isBusy).toBe(false);
   });
 
-  test('treats stale trailing assistant message as busy if actively streaming deltas', () => {
+  test('treats an orphaned streaming flag as idle once the trailing message is stale', () => {
+    // SSE died mid-turn: `streamingMessageIds` never clears, but the message
+    // timestamp stopped moving. The flag alone must not keep the spinner busy.
     const now = 100_000_000_000;
     const result = determineSessionActivity({
       sessionId: 'ses_1',
       status: undefined,
       messages: [{ role: 'assistant', id: 'msg_1', time: { created: now - 30_000 } }],
+      now,
+      isStreaming: true,
+    });
+    expect(result.phase).toBe('idle');
+    expect(result.isWorking).toBe(false);
+    expect(result.isBusy).toBe(false);
+  });
+
+  test('keeps a long legitimate turn busy while real updates keep landing', () => {
+    const now = 100_000_000_000;
+    const result = determineSessionActivity({
+      sessionId: 'ses_1',
+      status: undefined,
+      messages: [{
+        role: 'assistant',
+        id: 'msg_1',
+        // Created over a minute ago, but the backend refreshed `updated` 3s ago.
+        time: { created: now - 65_000, updated: now - 3_000 },
+      }],
       now,
       isStreaming: true,
     });

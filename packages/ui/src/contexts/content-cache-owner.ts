@@ -1,4 +1,5 @@
 import type { FilesAPI } from '@/lib/api/types';
+import { registerEphemeralCache } from '@/lib/memory-pressure';
 import { subscribeRuntimeEndpointWillChange } from '@/lib/runtime-switch';
 
 const MAX_ENTRIES = 40;
@@ -130,6 +131,13 @@ export function createContentCachedFiles(files: FilesAPI): { files: FilesAPI; di
     delete: files.delete ? (path) => mutate([path], () => files.delete!(path)) : undefined,
     rename: files.rename ? (oldPath, newPath) => mutate([oldPath, newPath], () => files.rename!(oldPath, newPath)) : undefined,
   };
+  // File contents are the largest cache this owner holds; under desktop memory
+  // pressure they are cheap to rebuild (one stat + one read per open file).
+  const unregisterMemoryPurge = registerEphemeralCache('files:content', () => {
+    if (!active) return;
+    generation += 1;
+    clearCache();
+  });
   const unsubscribeRuntime = subscribeRuntimeEndpointWillChange((detail) => {
     if (detail.runtimeKey === detail.previousRuntimeKey) return;
     // Invalidate cached content for the previous runtime, but keep serving reads.
@@ -144,6 +152,7 @@ export function createContentCachedFiles(files: FilesAPI): { files: FilesAPI; di
       active = false;
       generation += 1;
       clearCache();
+      unregisterMemoryPurge();
       unsubscribeRuntime();
     },
   };

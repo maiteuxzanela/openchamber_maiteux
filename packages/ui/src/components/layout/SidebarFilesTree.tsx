@@ -1,4 +1,5 @@
 import React from 'react';
+import { registerEphemeralCache } from '@/lib/memory-pressure';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 
 import { toast } from '@/components/ui';
@@ -1581,3 +1582,8 @@ const SidebarFilesTreeContent: React.FC<{ visible: boolean }> = ({ visible }) =>
     </section>
   );
 };
+
+// Whole file trees are rebuilt from the server on demand after a purge.
+registerEphemeralCache('files:trees', () => {
+  fileTreeCacheByRoot.clear();
+});

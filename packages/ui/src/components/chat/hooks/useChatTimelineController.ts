@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type { ChatMessageEntry } from '../lib/turns/types';
+import { registerEphemeralCache } from '@/lib/memory-pressure';
 import type { MessageListHandle } from '../MessageList';
 import {
     buildTurnWindowModel,
@@ -983,3 +984,13 @@ export const useChatTimelineController = ({
         handleActiveTurnChange,
     };
 };
+
+/**
+ * The turn model cache keeps message arrays for the most recent sessions. On
+ * desktop memory pressure it is dropped and rebuilt from the live store.
+ */
+export const clearTurnModelCache = (): void => {
+    turnModelCache.clear()
+}
+
+registerEphemeralCache('chat:turn-models', clearTurnModelCache)

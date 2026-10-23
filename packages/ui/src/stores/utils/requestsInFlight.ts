@@ -10,6 +10,8 @@
 // to survive HMR, and the UI polls a serializable snapshot instead of
 // subscribing to a store (this is high-frequency debug data, see stores docs).
 
+import { registerEphemeralCache } from '@/lib/memory-pressure';
+
 const STORAGE_KEY = 'openchamber_requests_in_flight';
 const SAMPLE_INTERVAL_MS = 1000;
 const WINDOW_MS = 5 * 60 * 1000;
@@ -312,3 +314,7 @@ const emptySnapshot = (): RequestsInFlightSnapshot => ({
     lastSampleAt: null,
     windowSeconds: MAX_SAMPLES,
 });
+
+// Five minutes of per-second percentiles are pure diagnostics; release them on
+// memory pressure and let sampling rebuild the window.
+registerEphemeralCache('debug:requests-in-flight', resetRequestsInFlight);

@@ -1,3 +1,5 @@
+import { registerEphemeralCache } from '@/lib/memory-pressure';
+
 export const streamDebugEnabled = (): boolean => {
     if (typeof window === 'undefined') return false;
     try {
@@ -292,3 +294,7 @@ if (typeof window !== 'undefined') {
         getSnapshot: getStreamPerfSnapshot,
     };
 }
+
+// Debug buffers live on `window` and survive the panel closing; under desktop
+// memory pressure they are disposal candidates (the panel restarts its window).
+registerEphemeralCache('debug:stream-perf', resetStreamPerf);
