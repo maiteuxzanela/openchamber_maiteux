@@ -574,3 +574,64 @@ describe('message queue runtime', () => {
     expect(recorded).toEqual([{ sessionId: SESSION, directory: DIRECTORY, signature: 'sig-1' }]);
   });
 });
+
+// The tick must be able to free a session whose only occupancy proof is an
+// unfinished trailing assistant message, even when the busy→idle socket events
+// that would normally wake it never arrive. Real setTimeout, real fetch seam,
+// injectable production clock — no fake timers, no SSE mocks.
+describe('trailing-fallback self-wake (lost socket events)', () => {
+  it('holds on the trailing fallback alone, then drains at the staleness instant with no status event or reconnect', async () => {
+    let currentTime = 10_000;
+    const { runtime, openCode, broadcasts } = createRuntime({ now: () => currentTime });
+    runtime.start();
+    // The status map has no entry for this session (the busy event was lost)
+    // and the only evidence the turn is live is an unfinished trailing
+    // assistant message created after this runtime started.
+    openCode.state.tail = [{ info: { role: 'assistant', time: { created: 10_000 } } }];
+
+    // Approach the staleness boundary: the tail's last update is 29.5s old,
+    // inside the 30s window, so the first tick must treat it as a live turn
+    // and arm its exact expiry (created 10_000 + 30_000 = 40_000).
+    currentTime = 39_500;
+    await runtime.enqueue(SESSION, DIRECTORY, item({ content: 'after the turn', text: 'after the turn' }));
+    await settle(100);
+    expect(openCode.state.sent).toHaveLength(0);
+    expect(runtime.sessionSnapshot(SESSION).items).toHaveLength(1);
+
+    // The turn dies with the socket: the tail never completes and no event of
+    // any kind reaches the runtime. Past the staleness instant the armed wake
+    // must drain the queue by itself.
+    currentTime = 40_200;
+    await settle(1_300);
+    expect(openCode.state.sent).toHaveLength(1);
+    expect(openCode.state.sent[0].path).toBe(`/session/${SESSION}/prompt_async`);
+    expect(openCode.state.sent[0].body.parts).toEqual([{ type: 'text', text: 'after the turn' }]);
+    expect(runtime.sessionSnapshot(SESSION).items).toEqual([]);
+    // This harness never called emit() or connect(): the drain happened with
+    // zero external status events and zero socket reconnects. Every broadcast
+    // the runtime produced is a queue update, never a synthetic status.
+    expect(broadcasts.length).toBeGreaterThan(0);
+    expect(broadcasts.every((event) => event?.type === 'openchamber:message-queue.updated')).toBe(true);
+  });
+
+  it('keeps a defensive poll armed after an authoritative busy and drains when the idle event is lost', async () => {
+    const { runtime, openCode } = createRuntime();
+    runtime.start();
+    // Authoritative busy carries no deadline of its own (retryAt: null), so
+    // the expiry arming above never happens and only the defensive poll can
+    // keep the queue alive.
+    openCode.state.statuses = { [SESSION]: { type: 'busy' } };
+    await runtime.enqueue(SESSION, DIRECTORY, item());
+    await settle(200);
+    expect(openCode.state.sent).toHaveLength(0);
+
+    // The turn ends server-side, but the status event dies with the socket —
+    // nothing is emitted, nothing reconnects. Only the periodic guard (kept
+    // armed while items wait) can still notice and drain.
+    openCode.state.statuses = {};
+    await settle(11_000);
+    expect(openCode.state.sent).toHaveLength(1);
+    expect(openCode.state.sent[0].path).toBe(`/session/${SESSION}/prompt_async`);
+    expect(runtime.sessionSnapshot(SESSION).items).toEqual([]);
+  }, 20_000);
+});

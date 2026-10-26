@@ -104,11 +104,19 @@ persisted "sending" flag would strand a message forever.
    next one: `GET /session/status` must not list the session as busy/retry,
    and the trailing message must not be an unfinished assistant reply (the
    status map only lists busy sessions, so a missed busy event leaves no
-   entry while a turn still streams). An unfinished reply created before this
+   entry while a turn still streams). A reply whose last update
+   (`time.updated`, falling back to `time.created`) is more than 30 s old is
+   stale evidence, not a live turn. An unfinished reply created before this
    runtime started does not block: its run died with the previous server and
    will never complete, so a restored queue would wait on it forever. A reply
    with no `created` time still blocks. A failed fetch is unknown, never idle:
    the tick re-arms with backoff.
+   When occupancy rests on the unfinished-tail fallback, the tick arms its
+   exact expiry (`lastUpdate + 30 s`), so a lost completion or idle event can
+   no longer strand the queue. Independently, every tick that returns with
+   items still queued and nothing in flight leaves a 10 s defensive poll
+   armed: an authoritative `busy` with no deadline, a hold, or a head removed
+   mid-await can only delay delivery, never abandon it.
 5. The head is marked in flight (broadcast), then sent:
    - text starting with `/` that names a command in OpenCode's `/command`
      list (skills included) and carries no captured context goes to
@@ -127,7 +135,9 @@ persisted "sending" flag would strand a message forever.
    Success removes the item, persists, broadcasts, and marks the user
    message sent for notifications. Failure keeps the item, backs off
    2 s → 60 s (doubling per consecutive failure of that item), and re-arms.
-6. The next item goes out after the next busy → idle cycle.
+6. The next item goes out after the next busy → idle cycle, when the
+   fallback evidence expires, or on the 10 s defensive poll — whichever
+   happens first when socket events are lost.
 
 ## Holds
 

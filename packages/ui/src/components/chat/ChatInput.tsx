@@ -63,7 +63,7 @@ import { useChatColumnSession } from './chatColumnSession';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
 import { MobileAgentButton } from './MobileAgentButton';
 import { MobileModelButton } from './MobileModelButton';
-import { STALE_PENDING_ASSISTANT_TIMEOUT_MS, useCurrentSessionActivity, useSessionActivity } from '@/hooks/useSessionActivity';
+import { useCurrentSessionActivity, useSessionActivity } from '@/hooks/useSessionActivity';
 import { toast } from '@/components/ui';
 // useMessageStore removed — messages now come from sync system
 import { isVSCodeRuntime } from '@/lib/desktop';
@@ -104,7 +104,7 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { fetchResponseStyleInstruction } from '@/lib/responseStyle';
 import { wrapSystemReminder } from '@/lib/systemReminder';
 import { getSyncMessages } from '@/sync/sync-refs';
-import { useStreamingStore } from '@/sync/streaming';
+import { isSessionTurnGenerating } from './sessionTurnGenerating';
 import { eventMatchesShortcut, getEffectiveShortcutCombo, normalizeCombo } from '@/lib/shortcuts';
 import {
     assignImageAttachmentFilenames,
@@ -2093,54 +2093,23 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
 
     const isCurrentSessionActivelyGenerating = React.useCallback((): boolean => {
         if (!currentSessionId) return false;
-        if (autoReviewRunning) return true;
-
-        // Authoritative backend status wins: when the server still reports the
-        // session as busy/retry (phase !== 'idle' or isBusy), the session MUST
-        // be treated as occupied. Long tool runs and thinking stretches emit
-        // no deltas and let the trailing assistant message go stale, so a
-        // premature "not generating" return below would flip the Stop/Queue
-        // affordance back to Send and collide a second prompt into the
-        // running turn.
-        if (currentSessionPhase !== 'idle' || currentSessionIsBusy) return true;
-
-        // If streaming deltas actively, it is generating tokens
-        const streamingId = useStreamingStore.getState().streamingMessageIds.get(currentSessionId);
-        if (streamingId) return true;
-
-        // Fallback while status events settle: the trailing assistant message.
-        const dir = currentSessionDirectoryForSync ?? useSessionUIStore.getState().getDirectoryForSession(currentSessionId) ?? undefined;
-        const sessionMsgs = getSyncMessages(currentSessionId, dir);
-        const lastMsg = sessionMsgs.length > 0 ? sessionMsgs[sessionMsgs.length - 1] : undefined;
-
-        if (lastMsg?.role === 'assistant') {
-            if (typeof (lastMsg as { time?: { completed?: number } })?.time?.completed === 'number') {
-                return false;
-            }
-            if ((lastMsg as { finish?: unknown })?.finish) {
-                return false;
-            }
-            const timeInfo = (lastMsg as { time?: { updated?: number; created?: number } })?.time;
-            const ts = timeInfo?.updated ?? timeInfo?.created;
-            if (typeof ts === 'number' && Number.isFinite(ts)) {
-                const tsMs = ts < 1e10 ? ts * 1000 : ts;
-                // A stale trailing message only counts as idle when there is
-                // no authoritative busy status and no active delta streaming
-                // — both were already ruled in as busy above.
-                if (Date.now() - tsMs > STALE_PENDING_ASSISTANT_TIMEOUT_MS) {
-                    return false;
-                }
-            }
-            // Trailing assistant message with no completion marker, no finish
-            // and a fresh timestamp: the turn is still generating.
-            return true;
-        }
-
-        // Default: anything that is not a pending trailing assistant message
-        // (empty session, last message from the user, …) is NOT generating.
-        // Returning true here would queue the first prompt of a brand new
-        // session instead of dispatching it.
-        return false;
+        // The predicate body lives in sessionTurnGenerating.ts so the
+        // deterministic suite can exercise the real logic (including the
+        // orphaned-streaming-flag staleness check) without rendering this
+        // 4000-line composer. The trailing message is resolved lazily here,
+        // preserving the original evaluation order: the streaming-flag
+        // short-circuit never touches the message store when it decides.
+        return isSessionTurnGenerating({
+            sessionId: currentSessionId,
+            autoReviewRunning,
+            sessionPhase: currentSessionPhase,
+            sessionIsBusy: currentSessionIsBusy,
+            getTrailingMessage: () => {
+                const dir = currentSessionDirectoryForSync ?? useSessionUIStore.getState().getDirectoryForSession(currentSessionId) ?? undefined;
+                const sessionMsgs = getSyncMessages(currentSessionId, dir);
+                return sessionMsgs.length > 0 ? sessionMsgs[sessionMsgs.length - 1] : undefined;
+            },
+        });
     }, [currentSessionId, autoReviewRunning, currentSessionPhase, currentSessionIsBusy, currentSessionDirectoryForSync]);
 
     // Single queue/steer predicate shared by the primary action (send button)

@@ -36,6 +36,10 @@ const HOLD_MAX_TTL_MS = 10 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 15_000;
 const MESSAGE_TAIL_LIMIT = 2;
 const UNFINISHED_TAIL_STALE_MS = 30_000;
+// Lost socket events must never leave a session with queued items and no
+// future wake-up: whenever a tick returns without a deadline of its own, this
+// slow defensive poll keeps the loop alive.
+const DEFENSIVE_DISPATCH_POLL_MS = 10_000;
 
 const ATTACHMENT_SOURCES = new Set(['local', 'server', 'vscode']);
 // Context captured with a queued message (see QueuedContextPart in the UI
@@ -389,12 +393,19 @@ export function createMessageQueueRuntime({
   /**
    * Live idleness, or null when it could not be established. Unknown is never
    * idle: a fetch failure re-arms instead of sending into a running turn.
+   *
+   * Busy is reported with the instant the queue may look again:
+   * - authoritative `busy`/`retry` has no deadline (`retryAt: null`), because
+   *   the live status map stays in charge;
+   * - the fallback of an unfinished trailing assistant message carries
+   *   `retryAt`, the instant that evidence goes stale, so a tick can wake
+   *   itself even when the completion/idle event was lost.
    */
   const isSessionIdle = async (sessionId, directory) => {
     const statuses = asRecord(await openCodeFetch('/session/status', { directory }).catch(() => null));
     if (!statuses) return null;
     const type = asRecord(statuses[sessionId])?.type;
-    if (type === 'busy' || type === 'retry') return false;
+    if (type === 'busy' || type === 'retry') return { idle: false, retryAt: null };
     // The status map lists only busy sessions, so a missed busy event leaves
     // no entry while a turn still streams. The trailing unfinished assistant
     // message is the live evidence of that turn (mirrors the UI gate).
@@ -407,11 +418,19 @@ export function createMessageQueueRuntime({
     const lastTime = asRecord(last?.time);
     if (last?.role === 'assistant' && asCount(lastTime?.completed) === null) {
       const created = asCount(lastTime?.created);
-      if (created !== null && (now() - created > UNFINISHED_TAIL_STALE_MS)) {
-        // Stale unfinished tail: created more than 30 seconds ago, so don't block
+      const lastUpdateAt = asCount(lastTime?.updated) ?? created;
+      if (created !== null && (now() - lastUpdateAt > UNFINISHED_TAIL_STALE_MS)) {
+        // Stale unfinished tail: its last update (or creation) is older than
+        // 30 seconds, so it cannot still be a live turn.
         console.log(`[message-queue] ignoring stale unfinished tail (>30s) for ${sessionId}`);
       } else if (created === null || created >= runtimeStartedAt) {
-        return false;
+        // Live turn whose only proof is the unfinished tail. Wake the tick
+        // exactly when that evidence expires, so a lost socket event cannot
+        // leave the queue waiting for a completion that never arrives.
+        const expiresAt = created === null
+          ? now() + UNFINISHED_TAIL_STALE_MS
+          : (lastUpdateAt ?? created) + UNFINISHED_TAIL_STALE_MS;
+        return { idle: false, retryAt: expiresAt };
       } else {
         // Unfinished tail from before this runtime started: its run died with
         // the previous server, so it must not block delivery. (A missing
@@ -419,7 +438,7 @@ export function createMessageQueueRuntime({
         console.log(`[message-queue] ignoring pre-boot unfinished tail for ${sessionId}`);
       }
     }
-    return true;
+    return { idle: true, retryAt: null };
   };
 
   const resolveSlashCommand = async (text, directory) => {
@@ -568,7 +587,28 @@ export function createMessageQueueRuntime({
     return false;
   };
 
+  // `armDispatch` clears the session timer before `tick` runs, so any return
+  // path that does not schedule its own next attempt would abandon the queue.
+  // This guard closes that hole: with items waiting and nothing in flight, a
+  // slow poll is always kept armed. A hold is deliberately not exempt — an
+  // expired hold must be revisited — so a UI that died while holding the queue
+  // cannot pin it forever.
+  const ensureDispatchScheduled = (sessionId) => {
+    if (stopped || timers.has(sessionId) || sending.has(sessionId)) return;
+    const queue = queues.get(sessionId);
+    if (!queue || queue.items.length === 0) return;
+    armDispatch(sessionId, DEFENSIVE_DISPATCH_POLL_MS);
+  };
+
   async function tick(sessionId) {
+    try {
+      await runTick(sessionId);
+    } finally {
+      ensureDispatchScheduled(sessionId);
+    }
+  }
+
+  async function runTick(sessionId) {
     if (stopped) return;
     const queue = queues.get(sessionId);
     if (!queue || queue.items.length === 0 || sending.has(sessionId) || isHeld(sessionId)) return;
@@ -587,13 +627,21 @@ export function createMessageQueueRuntime({
       return;
     }
 
-    const idle = await isSessionIdle(sessionId, queue.directory);
-    if (idle === null) {
+    const status = await isSessionIdle(sessionId, queue.directory);
+    if (status === null) {
       armDispatch(sessionId, retryDelayMs(1));
       return;
     }
-    // Busy: the next idle status event re-arms the loop.
-    if (!idle) return;
+    if (!status.idle) {
+      // Busy: an idle status event normally re-arms the loop, but socket
+      // events can be lost. Fallback evidence arms its exact expiry; an
+      // authoritative busy has no deadline of its own, so `ensureDispatchScheduled`
+      // keeps a defensive poll alive until the turn really ends.
+      if (Number.isFinite(status.retryAt)) {
+        armDispatch(sessionId, Math.max(0, status.retryAt - now()));
+      }
+      return;
+    }
 
     // Re-read after the awaits — the user may have edited the queue meanwhile.
     const current = queues.get(sessionId);
@@ -781,9 +829,11 @@ export function createMessageQueueRuntime({
     const assistant = extractAssistantMessageUpdate(payload);
     if (assistant && queues.has(assistant.sessionId)) {
       if (assistant.aborted) abortedAt.set(assistant.sessionId, now());
-      // A completed reply without a following idle status (missed event)
-      // must still drain the queue; the tick verifies idleness itself.
-      if (assistant.completed && !timers.has(assistant.sessionId)) armDispatch(assistant.sessionId);
+      // A completed reply without a following idle status (missed event) must
+      // still drain the queue; the tick verifies idleness itself. Re-arm even
+      // when a timer exists: it may be the long fallback expiry of the
+      // unfinished tail, and completion proves that evidence is outdated.
+      if (assistant.completed) armDispatch(assistant.sessionId);
     }
   };
 
