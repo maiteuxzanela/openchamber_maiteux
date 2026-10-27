@@ -27,8 +27,9 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   buildPatch,
@@ -49,6 +50,13 @@ import {
   resolveDatabasePath,
 } from '../src/service/ledger.ts';
 import { LOCALES, createTranslator, normalizeLocale } from '../src/panel/i18n.ts';
+import {
+  findFocusedRoom,
+  isPathWithin,
+  matchRoomContext,
+  normalizeContextPath,
+  sortRoomsByContext,
+} from '../src/panel/context.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(HERE, '..');
@@ -351,6 +359,14 @@ const buildFixture = () => {
   const gammaRoot = repoRootOf(gammaDir);
   const unitRoot = repoRootOf(unitDir);
 
+  // --- worktrees recorded in the ledger (TICKET-HARNESS-76) ------------
+  const activeWorktree = path.join(root, 'worktrees', 'active-dante');
+  const claraWorktree = path.join(root, 'worktrees', 'active-clara');
+  const archivedWorktree = path.join(root, 'worktrees', 'archived-cris');
+  for (const dir of [activeWorktree, claraWorktree, archivedWorktree]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
   const ledgerFiles = [
     path.join(alphaRoot, 'modify.ts'),
     path.join(alphaRoot, 'keep.txt'),
@@ -366,7 +382,7 @@ const buildFixture = () => {
   ];
 
   const dbPath = path.join(root, 'ledger.db');
-  createLedgerDb(dbPath, { ledgerFiles, overflowFiles, brokenRoot });
+  createLedgerDb(dbPath, { ledgerFiles, overflowFiles, brokenRoot, activeWorktree, claraWorktree, archivedWorktree });
 
   return {
     root,
@@ -386,6 +402,9 @@ const buildFixture = () => {
     ledgerFiles,
     blobOriginal,
     blobModified,
+    activeWorktree,
+    claraWorktree,
+    archivedWorktree,
   };
 };
 
@@ -397,6 +416,7 @@ const createLedgerDb = (dbPath, fixture) => {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         lead_agent TEXT,
+        lead_session_id TEXT,
         status TEXT NOT NULL,
         time_created INTEGER NOT NULL,
         time_updated INTEGER NOT NULL
@@ -409,6 +429,8 @@ const createLedgerDb = (dbPath, fixture) => {
         status TEXT NOT NULL DEFAULT 'ready',
         time_created INTEGER NOT NULL,
         time_updated INTEGER NOT NULL,
+        worktree_dir TEXT,
+        worktree_branch TEXT,
         PRIMARY KEY (team_id, name)
       );
       CREATE TABLE team_modified_file (
@@ -420,22 +442,22 @@ const createLedgerDb = (dbPath, fixture) => {
     `);
 
     const insertTeam = db.prepare(
-      'INSERT INTO team (id, name, lead_agent, status, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO team (id, name, lead_agent, lead_session_id, status, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
     );
-    insertTeam.run(ROOM_OVERFLOW, 'suite-overflow', 'dante', 'active', 5_000_000, 5_000_100);
-    insertTeam.run(ROOM_ACTIVE, 'suite-active', 'dante', 'active', 4_000_000, 4_000_100);
-    insertTeam.run(ROOM_ARCHIVED, 'suite-archived', null, 'archived', 3_000_000, 3_000_100);
-    insertTeam.run(ROOM_EMPTY, 'suite-empty', null, 'active', 2_000_000, 2_000_100);
+    insertTeam.run(ROOM_OVERFLOW, 'suite-overflow', 'dante', 'sess-lead-overflow', 'active', 5_000_000, 5_000_100);
+    insertTeam.run(ROOM_ACTIVE, 'suite-active', 'dante', 'sess-lead', 'active', 4_000_000, 4_000_100);
+    insertTeam.run(ROOM_ARCHIVED, 'suite-archived', null, 'sess-lead-arch', 'archived', 3_000_000, 3_000_100);
+    insertTeam.run(ROOM_EMPTY, 'suite-empty', null, null, 'active', 2_000_000, 2_000_100);
 
     const insertMember = db.prepare(
-      'INSERT INTO team_member (team_id, name, session_id, agent, status, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO team_member (team_id, name, session_id, agent, status, time_created, time_updated, worktree_dir, worktree_branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
-    insertMember.run(ROOM_ACTIVE, 'dante', 'sess-dante', 'dante', 'ready', 1, 1);
-    insertMember.run(ROOM_ACTIVE, 'hugo', 'sess-hugo', 'hugo', 'standby', 1, 1);
-    insertMember.run(ROOM_ACTIVE, 'clara', 'sess-clara', 'clara', 'standby', 1, 1);
-    insertMember.run(ROOM_ARCHIVED, 'dante', 'sess-dante-arch', 'dante', 'shutdown', 1, 1);
-    insertMember.run(ROOM_ARCHIVED, 'cris', 'sess-cris-arch', 'cris', 'shutdown', 1, 1);
-    insertMember.run(ROOM_OVERFLOW, 'dante', 'sess-dante-overflow', 'dante', 'ready', 1, 1);
+    insertMember.run(ROOM_ACTIVE, 'dante', 'sess-dante', 'dante', 'ready', 1, 1, fixture.activeWorktree, 'wt-dante');
+    insertMember.run(ROOM_ACTIVE, 'hugo', 'sess-hugo', 'hugo', 'standby', 1, 1, null, null);
+    insertMember.run(ROOM_ACTIVE, 'clara', 'sess-clara', 'clara', 'standby', 1, 1, fixture.claraWorktree, 'wt-clara');
+    insertMember.run(ROOM_ARCHIVED, 'dante', 'sess-dante-arch', 'dante', 'shutdown', 1, 1, null, null);
+    insertMember.run(ROOM_ARCHIVED, 'cris', 'sess-cris-arch', 'cris', 'shutdown', 1, 1, fixture.archivedWorktree, 'wt-cris');
+    insertMember.run(ROOM_OVERFLOW, 'dante', 'sess-dante-overflow', 'dante', 'ready', 1, 1, null, null);
 
     const insertFile = db.prepare(
       'INSERT INTO team_modified_file (team_id, file_path, time_created) VALUES (?, ?, ?)',
@@ -742,9 +764,82 @@ const main = async () => {
         [ROOM_OVERFLOW, ROOM_ACTIVE, ROOM_ARCHIVED, ROOM_EMPTY],
       );
       assert.equal(all.database, path.resolve(fixture.dbPath));
+
+      // TICKET-HARNESS-76: worktrees and the lead session come from the ledger.
+      assert.deepEqual(
+        active.worktreesByRoom.get(ROOM_ACTIVE),
+        [
+          { path: path.resolve(fixture.claraWorktree), branch: 'wt-clara', member: 'clara', sessionId: 'sess-clara' },
+          { path: path.resolve(fixture.activeWorktree), branch: 'wt-dante', member: 'dante', sessionId: 'sess-dante' },
+        ],
+      );
+      assert.deepEqual(
+        archived.worktreesByRoom.get(ROOM_ARCHIVED),
+        [{ path: path.resolve(fixture.archivedWorktree), branch: 'wt-cris', member: 'cris', sessionId: 'sess-cris-arch' }],
+      );
+      assert.deepEqual(active.worktreesByRoom.get(ROOM_EMPTY), undefined);
+      assert.equal(active.rooms.find((room) => room.id === ROOM_ACTIVE).leadSessionId, 'sess-lead');
     } finally {
       if (saved === undefined) delete process.env.OPENCHAMBER_MULTIREPO_DB;
       else process.env.OPENCHAMBER_MULTIREPO_DB = saved;
+    }
+  });
+
+  await run('a ledger without lead_session_id/worktree_dir degrades instead of failing', () => {
+    // TICKET-HARNESS-76 compatibility contract: the affinity columns arrived
+    // later, so an older ensemble.db must still list rooms. The column probe is
+    // what keeps the query valid — removing it would throw "no such column".
+    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mrd-legacy-ledger-'));
+    const legacyDb = path.join(legacyRoot, 'ensemble.db');
+    const db = new DatabaseSync(legacyDb);
+    try {
+      db.exec(`
+        CREATE TABLE team (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          lead_agent TEXT,
+          status TEXT NOT NULL,
+          time_created INTEGER NOT NULL,
+          time_updated INTEGER NOT NULL
+        );
+        CREATE TABLE team_member (
+          team_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          agent TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'ready',
+          time_created INTEGER NOT NULL,
+          time_updated INTEGER NOT NULL,
+          PRIMARY KEY (team_id, name)
+        );
+        CREATE TABLE team_modified_file (
+          team_id TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          time_created INTEGER NOT NULL,
+          PRIMARY KEY (team_id, file_path)
+        );
+      `);
+      db.prepare(
+        'INSERT INTO team (id, name, lead_agent, status, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run('team_legacy', 'legacy-room', 'dante', 'active', 1_000, 2_000);
+      db.prepare(
+        'INSERT INTO team_member (team_id, name, session_id, agent, status, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('team_legacy', 'dante', 'sess-legacy', 'dante', 'ready', 1_000, 2_000);
+    } finally {
+      db.close();
+    }
+    const saved = process.env.OPENCHAMBER_MULTIREPO_DB;
+    process.env.OPENCHAMBER_MULTIREPO_DB = legacyDb;
+    try {
+      const snapshot = readLedger('all');
+      assert.equal(snapshot.rooms.length, 1);
+      assert.equal(snapshot.rooms[0].id, 'team_legacy');
+      assert.equal(snapshot.rooms[0].leadSessionId, null);
+      assert.equal(snapshot.worktreesByRoom.size, 0);
+    } finally {
+      if (saved === undefined) delete process.env.OPENCHAMBER_MULTIREPO_DB;
+      else process.env.OPENCHAMBER_MULTIREPO_DB = saved;
+      fs.rmSync(legacyRoot, { recursive: true, force: true });
     }
   });
 
@@ -863,7 +958,7 @@ const main = async () => {
   await run('i18n ships every English key in all 11 non-English dictionaries', () => {
     const source = fs.readFileSync(path.join(PACKAGE_ROOT, 'src', 'panel', 'i18n.ts'), 'utf8');
     const enKeys = extractEnKeys(source);
-    assert.equal(enKeys.length, 74, 'the en dictionary must expose 74 keys');
+    assert.equal(enKeys.length, 75, 'the en dictionary must expose 75 keys');
     assert.equal(new Set(enKeys).size, enKeys.length, 'en keys must be unique');
     const blocks = extractDictBlocks(source);
     assert.deepEqual([...blocks.keys()], ['de', 'fr', 'zhCN', 'zhTW', 'uk', 'es', 'ptBR', 'ko', 'pl', 'ja', 'tr']);
@@ -890,6 +985,7 @@ const main = async () => {
     assert.equal(pt('revertFile'), 'Reverter Este Arquivo');
     assert.equal(pt('revertRepo'), 'Reverter Este Repositório');
     assert.equal(pt('revertRoom'), 'Reverter Tudo Desta Sala');
+    assert.equal(pt('worktreeCurrent'), 'Worktree Atual');
     const body = pt('revertRepoBody', { count: 3, repo: 'alpha' });
     assert.match(body, /3/);
     assert.match(body, /alpha/);
@@ -908,6 +1004,388 @@ const main = async () => {
     assert.equal(normalizeLocale(''), 'en');
     assert.equal(normalizeLocale(undefined), 'en');
     assert.equal(createTranslator('zz')('revertFile'), createTranslator('en')('revertFile'));
+  });
+
+  group('Layer 2b - contextual room ranking and visual focus (TICKET-HARNESS-76)');
+
+  const ctxRepo = (root) => ({
+    root,
+    name: path.basename(root),
+    branch: 'main',
+    head: null,
+    dirty: false,
+    files: [],
+    counts: { files: 0, added: 0, modified: 0, deleted: 0, renamed: 0, untracked: 0, clean: 0 },
+    truncatedFiles: 0,
+    error: null,
+  });
+  const ctxRoom = (overrides = {}) => ({
+    id: 'room-base',
+    name: 'room-base',
+    status: 'active',
+    leadAgent: null,
+    leadSessionId: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    memberCount: 1,
+    worktrees: [],
+    repos: [],
+    totals: { repos: 0, files: 0, dirtyFiles: 0 },
+    errors: [],
+    ...overrides,
+  });
+
+  await run('normalizeContextPath and isPathWithin normalise separators and reject sibling prefixes', () => {
+    assert.equal(normalizeContextPath(null), null);
+    assert.equal(normalizeContextPath(undefined), null);
+    assert.equal(normalizeContextPath('   '), null);
+    assert.equal(normalizeContextPath('/repo/wt/'), '/repo/wt');
+    assert.equal(normalizeContextPath('C:\\repo\\wt\\'), 'C:/repo/wt');
+    assert.equal(normalizeContextPath('/'), '/');
+    assert.equal(isPathWithin('/repo/wt', '/repo/wt'), true);
+    assert.equal(isPathWithin('/repo/wt', '/repo/wt/src/main.ts'), true);
+    assert.equal(isPathWithin('/repo/wt/', '/repo/wt/src'), true);
+    assert.equal(isPathWithin('/repo/wt', '/repo/wtx'), false);
+    assert.equal(isPathWithin(null, '/repo/wt'), false);
+    assert.equal(isPathWithin('/', '/repo'), true);
+  });
+
+  await run('rank 0 focuses the worktree that contains the active directory', () => {
+    const room = ctxRoom({
+      id: 'room-wt',
+      worktrees: [
+        { path: '/repo/project-worktrees/feat', branch: 'feat', member: 'cris', sessionId: null },
+        { path: '/repo/project-worktrees/other', branch: 'other', member: 'davi', sessionId: null },
+      ],
+    });
+    const match = matchRoomContext(room, {
+      directory: '/repo/project-worktrees/feat/packages/ui',
+      sessionId: null,
+    });
+    assert.equal(match.rank, 0);
+    assert.equal(match.kind, 'worktree');
+    assert.equal(match.worktreePath, '/repo/project-worktrees/feat');
+    assert.equal(match.sessionId, null);
+
+    // The project root is NOT the worktree: a sibling worktree must not match.
+    const projectRoot = matchRoomContext(room, { directory: '/repo/project', sessionId: null });
+    assert.equal(projectRoot.rank, 2);
+  });
+
+  await run('rank 0 also follows the current session (lead or member session)', () => {
+    const leadRoom = ctxRoom({ id: 'room-lead', leadSessionId: 'sess-lead' });
+    const leadMatch = matchRoomContext(leadRoom, { directory: null, sessionId: 'sess-lead' });
+    assert.equal(leadMatch.rank, 0);
+    assert.equal(leadMatch.kind, 'session');
+    assert.equal(leadMatch.sessionId, 'sess-lead');
+
+    const memberRoom = ctxRoom({
+      id: 'room-member',
+      worktrees: [
+        { path: '/repo/project-worktrees/davi', branch: 'davi', member: 'davi', sessionId: 'sess-davi' },
+      ],
+    });
+    const memberMatch = matchRoomContext(memberRoom, { directory: '/repo/project', sessionId: 'sess-davi' });
+    assert.equal(memberMatch.rank, 0);
+    assert.equal(memberMatch.kind, 'session');
+    assert.equal(memberMatch.worktreePath, '/repo/project-worktrees/davi');
+
+    const stranger = matchRoomContext(memberRoom, { directory: '/repo/project', sessionId: 'sess-stranger' });
+    assert.equal(stranger.rank, 2);
+  });
+
+  await run('rank 1 matches rooms touching the active repository root', () => {
+    const parentRoom = ctxRoom({ id: 'room-parent', repos: [ctxRepo('/repo/project')] });
+    assert.equal(matchRoomContext(parentRoom, { directory: '/repo/project/packages/ui', sessionId: null }).rank, 1);
+    assert.equal(matchRoomContext(parentRoom, { directory: '/repo/project', sessionId: null }).rank, 1);
+    // A repository nested inside the active project is also the same project.
+    const nestedRoom = ctxRoom({ id: 'room-nested', repos: [ctxRepo('/repo/project/packages/ui')] });
+    assert.equal(matchRoomContext(nestedRoom, { directory: '/repo/project', sessionId: null }).rank, 1);
+    // Unrelated directories fall back to rank 2.
+    assert.equal(matchRoomContext(parentRoom, { directory: '/repo/other', sessionId: null }).rank, 2);
+    assert.equal(matchRoomContext(parentRoom, { directory: '/repo/projectx', sessionId: null }).rank, 2);
+  });
+
+  await run('sortRoomsByContext orders rank 0, then rank 1, then the rest by recency', () => {
+    const worktreeSessionRoom = ctxRoom({
+      id: 'room-worktree-session',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      worktrees: [
+        { path: '/repo/project-worktrees/feat', branch: 'feat', member: 'cris', sessionId: 'sess-active' },
+      ],
+    });
+    const repoRoom = ctxRoom({
+      id: 'room-repo',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+      repos: [ctxRepo('/repo/project')],
+    });
+    const newerOther = ctxRoom({
+      id: 'room-newer',
+      updatedAt: '2026-01-05T00:00:00.000Z',
+      repos: [ctxRepo('/elsewhere/newer')],
+    });
+    const olderOther = ctxRoom({
+      id: 'room-older',
+      updatedAt: '2026-01-03T00:00:00.000Z',
+      repos: [ctxRepo('/elsewhere/older')],
+    });
+
+    const ranked = sortRoomsByContext(
+      [newerOther, repoRoom, olderOther, worktreeSessionRoom],
+      { directory: '/repo/project', sessionId: 'sess-active' },
+    );
+    assert.deepEqual(
+      ranked.map((room) => room.id),
+      ['room-worktree-session', 'room-repo', 'room-newer', 'room-older'],
+    );
+
+    const rankedByDirectory = sortRoomsByContext(
+      [repoRoom, worktreeSessionRoom],
+      { directory: '/repo/project-worktrees/feat/src', sessionId: null },
+    );
+    assert.deepEqual(
+      rankedByDirectory.map((room) => room.id),
+      ['room-worktree-session', 'room-repo'],
+    );
+  });
+
+  await run('unknown directories fall back to temporal order without a focused room', () => {
+    const first = ctxRoom({ id: 'room-first', updatedAt: '2026-02-02T00:00:00.000Z' });
+    const second = ctxRoom({ id: 'room-second', updatedAt: '2026-02-01T00:00:00.000Z' });
+    const unknown = { directory: '/totally/unknown/directory', sessionId: 'sess-unknown' };
+    assert.deepEqual(
+      sortRoomsByContext([second, first], unknown).map((room) => room.id),
+      ['room-first', 'room-second'],
+    );
+    assert.equal(findFocusedRoom([second, first], unknown), null);
+    assert.equal(findFocusedRoom([], unknown), null);
+    assert.equal(findFocusedRoom([first], { directory: null, sessionId: null }), null);
+  });
+
+  await run('equal rank and timestamps keep the input order (stable rendering)', () => {
+    const left = ctxRoom({ id: 'room-left', updatedAt: '2026-02-02T00:00:00.000Z' });
+    const right = ctxRoom({ id: 'room-right', updatedAt: '2026-02-02T00:00:00.000Z' });
+    const context = { directory: null, sessionId: null };
+    assert.deepEqual(
+      sortRoomsByContext([left, right], context).map((room) => room.id),
+      ['room-left', 'room-right'],
+    );
+    assert.deepEqual(
+      sortRoomsByContext([right, left], context).map((room) => room.id),
+      ['room-right', 'room-left'],
+    );
+  });
+
+  await run('panel captures directory/session pushes and renders the contextual highlight', () => {
+    const source = fs.readFileSync(path.join(PACKAGE_ROOT, 'src', 'panel', 'main.ts'), 'utf8');
+    assert.match(source, /host\.onReady\(/);
+    assert.match(source, /host\.onDirectory\(/);
+    assert.match(source, /host\.onSession\(/);
+    assert.match(source, /sortRoomsByContext\(/);
+    assert.match(source, /findFocusedRoom\(/);
+    assert.match(source, /is-active-context/);
+    assert.match(source, /mrd-room-focused/);
+    assert.match(source, /t\('worktreeCurrent'\)/);
+
+    const css = fs.readFileSync(path.join(PACKAGE_ROOT, 'panel', 'style.css'), 'utf8');
+    assert.match(css, /\.mrd-room\.is-active-context/);
+    assert.match(css, /\.mrd-room\.mrd-room-focused/);
+    assert.match(css, /var\(--primary/);
+    assert.match(css, /\.mrd-badge\.is-context/);
+
+    const contract = fs.readFileSync(path.join(PACKAGE_ROOT, 'src', 'service', 'contract.ts'), 'utf8');
+    assert.match(contract, /worktrees: RoomWorktree\[\]/);
+
+    const builtPanel = fs.readFileSync(BUILT_PANEL, 'utf8');
+    for (const literal of ['is-active-context', 'mrd-room-focused', 'worktreeCurrent', 'onDirectory']) {
+      assert.ok(builtPanel.includes(literal), `built panel must embed ${literal}`);
+    }
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Layer 2c — the SHIPPED panel bundle ranks and highlights rooms in a
+   * real happy-dom frame, driven only by real postMessage traffic.
+   * ------------------------------------------------------------------ */
+
+  group('Layer 2c - shipped panel bundle ranks and highlights rooms in a real DOM');
+
+  const PANEL_BUNDLE_SOURCE = fs.readFileSync(BUILT_PANEL, 'utf8');
+  const READY_THEME_TOKENS = {
+    background: '#111', elevated: '#1a1a1a', foreground: '#eee', muted: '#666', subtle: '#222', border: '#333',
+    hover: '#2a2a2a', selection: '#334', focus: '#4af', primary: '#4af', mutedSurface: '#f4f4f5',
+    elevatedForeground: '#111', active: '#e5e5e5', selectionForeground: '#111', primaryForeground: '#fff',
+    primaryText: '#123456', successText: '#244433', warningText: '#664422', errorText: '#882233', infoText: '#334488',
+    success: '#16a34a', warning: '#d97706', error: '#dc2626', info: '#2563eb',
+    font: 'SF Pro Text, sans-serif', mono: 'Menlo, monospace', radius: '9px',
+  };
+
+  const loadHappyDom = async () => {
+    const requireFromUi = createRequire(path.join(REPO_ROOT, 'packages', 'ui', 'package.json'));
+    const entry = requireFromUi.resolve('happy-dom');
+    return import(pathToFileURL(entry).href);
+  };
+
+  const panelReadyMessage = (directory, session) => ({
+    channel: 'openchamber.sdk',
+    v: 1,
+    type: 'ready',
+    payload: {
+      theme: { mode: 'dark', tokens: READY_THEME_TOKENS },
+      locale: 'pt-BR',
+      directory,
+      session,
+      surface: 'panel',
+      connection: { connected: false, account: '' },
+      settings: {},
+      item: null,
+    },
+  });
+
+  const waitForDom = async (predicate, timeoutMs = 3000) => {
+    const startedAt = Date.now();
+    for (;;) {
+      if (predicate()) return;
+      if (Date.now() - startedAt > timeoutMs) throw new Error('waitForDom timed out');
+      await delay(5);
+    }
+  };
+
+  const panelRoom = (id, name, { root, worktrees = [], updatedAt, dirtyFiles = 0, leadSessionId = null, worktreeSessionId = null }) => ({
+    id,
+    name,
+    status: 'active',
+    leadAgent: 'dante',
+    leadSessionId,
+    createdAt: updatedAt,
+    updatedAt,
+    memberCount: 1,
+    worktrees: worktrees.map((worktree) => ({
+      path: worktree,
+      branch: 'feat',
+      member: 'hugo',
+      sessionId: worktreeSessionId,
+    })),
+    repos: [{
+      root,
+      name: path.basename(root),
+      branch: 'main',
+      head: 'a'.repeat(40),
+      dirty: dirtyFiles > 0,
+      files: [],
+      counts: { files: dirtyFiles, added: 0, modified: dirtyFiles, deleted: 0, renamed: 0, untracked: 0, clean: 0 },
+      truncatedFiles: 0,
+      error: null,
+    }],
+    totals: { repos: 1, files: dirtyFiles, dirtyFiles },
+    errors: [],
+  });
+
+  await run('the shipped panel ranks, badges and auto-expands the room bound to the active session', async () => {
+    const { Window } = await loadHappyDom();
+    const win = new Window({ url: 'http://localhost/' });
+    const hostDocument = win.document;
+    hostDocument.body.innerHTML = '<iframe id="guest-frame"></iframe>';
+    const iframe = hostDocument.getElementById('guest-frame');
+    const guest = iframe.contentWindow;
+    guest.document.body.innerHTML = '<div id="root"></div>';
+
+    // The host now hands the guest the OWNING PROJECT ROOT (TICKET-HARNESS-75),
+    // so the worktree affinity must come from the session recorded per member —
+    // exactly the production path this ranking is designed around.
+    const projectRoot = '/repo/project-alpha';
+    const worktreePath = '/repo/worktrees/project-alpha/fix-login';
+    const roomsResponse = {
+      database: '/tmp/none/ensemble.db',
+      generatedAt: '2026-02-03T00:00:00.000Z',
+      // Deliberately NOT pre-sorted: the panel must order the server response.
+      rooms: [
+        panelRoom('room-other', 'other-room', {
+          root: '/repo/unrelated',
+          updatedAt: '2026-02-03T00:00:00.000Z',
+          // A dirty rank-2 room: without the rank-0 branch, applyDefaults would
+          // expand this one and leave the focused room collapsed.
+          dirtyFiles: 2,
+        }),
+        panelRoom('room-repo', 'repo-room', {
+          root: projectRoot,
+          updatedAt: '2026-02-01T00:00:00.000Z',
+        }),
+        panelRoom('room-worktree', 'worktree-room', {
+          // The worktree checkout lives OUTSIDE the parent root: once the
+          // session no longer matches, only the repo room keeps directory
+          // affinity.
+          root: '/repo/worktrees/project-alpha/fix-login',
+          worktrees: [worktreePath],
+          updatedAt: '2026-02-02T00:00:00.000Z',
+          worktreeSessionId: 'sess-active',
+        }),
+      ],
+    };
+
+    const serviceRequests = [];
+    win.addEventListener('message', (event) => {
+      const message = event.data;
+      if (!message || typeof message !== 'object' || message.type !== 'service-request') return;
+      serviceRequests.push(message.payload);
+      const isRooms = message.payload?.path === '/api/multirepo/rooms';
+      guest.postMessage({
+        channel: 'openchamber.sdk',
+        v: 1,
+        type: 'result',
+        id: message.id,
+        ok: true,
+        payload: isRooms
+          ? { status: 200, body: JSON.stringify(roomsResponse) }
+          : { status: 404, body: JSON.stringify({ error: { code: 'not-found', message: `no route ${message.payload?.path}` } }) },
+      }, '*');
+    });
+
+    guest.eval(PANEL_BUNDLE_SOURCE);
+    guest.postMessage(panelReadyMessage(projectRoot, { id: 'sess-active', title: 'fix-login' }), '*');
+
+    const cards = () => Array.from(guest.document.querySelectorAll('.mrd-room'));
+    const names = () => cards().map((card) => card.querySelector('.mrd-room-name')?.textContent);
+
+    await waitForDom(() => cards().length === 3);
+    assert.deepEqual(names(), ['worktree-room', 'repo-room', 'other-room']);
+
+    const focused = cards()[0];
+    assert.ok(focused.classList.contains('is-active-context'), 'focused room carries is-active-context');
+    assert.ok(focused.classList.contains('mrd-room-focused'), 'focused room carries mrd-room-focused');
+    assert.equal(focused.getAttribute('aria-current'), 'true');
+    assert.equal(focused.dataset.context, 'session');
+    const badge = focused.querySelector('.mrd-badge.is-context');
+    assert.equal(badge?.textContent, 'Worktree Atual');
+    assert.equal(badge?.title, worktreePath);
+    assert.equal(focused.querySelector('.mrd-disclosure.is-room')?.getAttribute('aria-expanded'), 'true');
+    assert.ok(focused.querySelector('.mrd-room-body'), 'rank 0 room is auto-expanded');
+
+    for (const card of cards().slice(1)) {
+      assert.ok(!card.classList.contains('is-active-context'), 'non-focused room is not highlighted');
+      assert.equal(card.querySelector('.mrd-badge.is-context'), null);
+      assert.equal(card.getAttribute('aria-current'), null);
+    }
+    assert.ok(serviceRequests.some((request) => request.path === '/api/multirepo/rooms'));
+
+    // Session push: without the worktree session, the REPO match is ordered
+    // first (rank 1). Only rank 0 owns the worktree highlight/badge, so the
+    // repo room must move up WITHOUT claiming "Worktree Atual".
+    guest.postMessage({ channel: 'openchamber.sdk', v: 1, type: 'session', payload: { session: null } }, '*');
+    await waitForDom(() => names()[0] === 'repo-room');
+    assert.deepEqual(names(), ['repo-room', 'other-room', 'worktree-room']);
+    for (const card of cards()) {
+      assert.equal(card.querySelector('.mrd-badge.is-context'), null);
+    }
+    assert.ok(!cards()[0].classList.contains('is-active-context'));
+
+    // Directory push to an unrelated folder: every room falls back to rank 2
+    // and the newest room leads again.
+    guest.postMessage({ channel: 'openchamber.sdk', v: 1, type: 'directory', payload: { directory: '/unrelated' } }, '*');
+    await waitForDom(() => names()[0] === 'other-room');
+    assert.deepEqual(names(), ['other-room', 'worktree-room', 'repo-room']);
+    for (const card of cards()) {
+      assert.equal(card.querySelector('.mrd-badge.is-context'), null);
+    }
   });
 
   group('Layer 3 - compiled service over real HTTP, git and SQLite');
@@ -948,6 +1426,14 @@ const main = async () => {
     assert.equal(room.createdAt, new Date(4_000_000).toISOString());
     assert.equal(room.updatedAt, new Date(4_000_100).toISOString());
     assert.equal(room.memberCount, 3);
+    // TICKET-HARNESS-76: worktrees flow from team_member to the wire, sorted by path.
+    assert.equal(room.leadSessionId, 'sess-lead');
+    assert.deepEqual(room.worktrees, [
+      { path: fixture.claraWorktree, branch: 'wt-clara', member: 'clara', sessionId: 'sess-clara' },
+      { path: fixture.activeWorktree, branch: 'wt-dante', member: 'dante', sessionId: 'sess-dante' },
+    ]);
+    assert.deepEqual(findRoom(response.json, ROOM_EMPTY).worktrees, []);
+    assert.equal(findRoom(response.json, ROOM_EMPTY).leadSessionId, null);
     assert.deepEqual(
       room.repos.map((repo) => repo.name),
       ['alpha-repo', 'beta-unborn', 'broken-git'],

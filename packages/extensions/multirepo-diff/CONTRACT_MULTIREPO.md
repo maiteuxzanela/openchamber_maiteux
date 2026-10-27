@@ -80,9 +80,18 @@ de 2s (use após operações que mudam o disco).
       "name": "multirepo-diff",
       "status": "active",                 // "active" | "archived"
       "leadAgent": "dante",               // string | null
+      "leadSessionId": "ses_abc123",      // sessão líder; null quando o ledger não registra
       "createdAt": "2026-10-19T13:11:00.000Z",
       "updatedAt": "2026-10-19T16:20:00.000Z",
       "memberCount": 4,
+      "worktrees": [                       // TICKET-HARNESS-76: team_member.worktree_dir, ordenado por path
+        {
+          "path": "/mnt/.../openchamber_maiteux-worktrees/feat",
+          "branch": "feat/context-rank",   // null quando não registrado
+          "member": "cris",
+          "sessionId": "ses_member123"     // team_member.session_id; null quando ausente
+        }
+      ],
       "repos": [
         {
           "root": "/mnt/94CCB337CCB3130A/openchamber_maiteux",  // git rev-parse --show-toplevel
