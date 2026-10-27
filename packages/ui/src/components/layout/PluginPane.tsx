@@ -66,6 +66,8 @@ import { cn } from '@/lib/utils';
 import { closeGuestTabsEverywhere } from '@/lib/guests/tabs';
 import { pluginIdFromMode, type PluginContextPanelMode } from '@/lib/surfaces/modes';
 import { useUIStore } from '@/stores/useUIStore';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { resolveConfigDirectory } from '@/stores/useConfigStore';
 import { useInputStore } from '@/sync/input-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSession, useSessionStatus } from '@/sync/sync-context';
@@ -139,6 +141,19 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   const effectiveDirectory = useEffectiveDirectory();
   const selectedSessionId = useSessionUIStore((state) => state.currentSessionId);
   const directory = backgroundAction ? backgroundAction.item.directory ?? '' : effectiveDirectory;
+  // Extensions (Kanban, etc.) match the directory against the registered project
+  // path. A session opened from a worktree exposes the isolated worktree path,
+  // so guests receive the owning project's root instead — the parent config
+  // scope — while session/file lookups keep the physical worktree path.
+  // Both topology slices are read imperatively inside `resolveConfigDirectory`,
+  // so they are listed as dependencies to re-resolve when discovery lands late.
+  const projects = useProjectsStore((state) => state.projects);
+  const worktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
+  const guestDirectory = React.useMemo(
+    () => resolveConfigDirectory(directory) ?? directory,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolveConfigDirectory reads the topology imperatively; both slices must invalidate the memo.
+    [directory, projects, worktreesByProject],
+  );
   const currentSessionId = backgroundAction ? backgroundAction.item.sessionId : selectedSessionId;
   const session = useSession(currentSessionId, directory || undefined);
   const sessionStatus = useSessionStatus(currentSessionId ?? '', directory || undefined);
@@ -277,13 +292,13 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
       },
     },
     locale,
-    directory: directory || null,
+    directory: guestDirectory || null,
     session: sessionSnapshot,
     surface: headless && guest?.backgroundEntry ? 'background' : surface,
     connection: oauthStatus?.connection ?? EMPTY_GUEST_CONNECTION,
     settings: oauthStatus?.settings ?? {},
     item,
-  }), [currentTheme, readableColors, directory, guest?.backgroundEntry, headless, item, locale, oauthStatus, sessionSnapshot, surface]);
+  }), [currentTheme, readableColors, guestDirectory, guest?.backgroundEntry, headless, item, locale, oauthStatus, sessionSnapshot, surface]);
 
   const frameKey = `${guestId}:${guest?.version ?? ''}:${guestEnabled}:service-${guest?.service?.granted ? '1' : '0'}:${guest?.entry ?? ''}:${guest?.backgroundEntry ?? ''}`;
 
@@ -304,6 +319,8 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   readyRef.current = ready;
   const directoryRef = React.useRef(directory);
   directoryRef.current = directory;
+  const guestDirectoryRef = React.useRef(guestDirectory);
+  guestDirectoryRef.current = guestDirectory;
   const sessionIdRef = React.useRef(currentSessionId);
   sessionIdRef.current = currentSessionId;
   const sessionBusyRef = React.useRef(sessionBusy);
@@ -415,7 +432,7 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
 
   const pushHostState = React.useCallback(() => {
     postToGuest(buildReadyMessage(readyRef.current));
-    postToGuest(buildDirectoryMessage(directoryRef.current || null));
+    postToGuest(buildDirectoryMessage(guestDirectoryRef.current || null));
     postToGuest(buildSessionMessage(readyRef.current.session));
     postToGuest(buildConnectionMessage(readyRef.current.connection));
     postToGuest(buildSettingsMessage(readyRef.current.settings));

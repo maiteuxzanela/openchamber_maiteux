@@ -858,7 +858,7 @@ const getProjectDefaultsForConfigDirectory = (directory: string | null | undefin
  * per-worktree snapshot. Returns the owning project's path when the directory is
  * a known worktree, else the directory unchanged.
  */
-const resolveConfigDirectory = (directory: string | null | undefined): string | null => {
+export const resolveConfigDirectory = (directory: string | null | undefined): string | null => {
     const dir = normalizeConfigPath(directory);
     const projects = getKnownProjectDirectories();
     if (!dir) return null;
