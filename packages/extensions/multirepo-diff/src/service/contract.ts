@@ -85,14 +85,36 @@ export interface RoomFileError {
   reason: string;
 }
 
+/**
+ * Active worktree linked to a room member (TICKET-HARNESS-76).
+ *
+ * The panel uses these paths and session ids to rank the room that owns the
+ * active session/worktree first. `path` is absolute and POSIX-normalized;
+ * `sessionId` is the member session recorded in `team_member.session_id`.
+ */
+export interface RoomWorktree {
+  /** Absolute worktree directory (`team_member.worktree_dir`). */
+  path: string;
+  /** Branch checked out in the worktree, when the ledger records one. */
+  branch: string | null;
+  /** Member name that owns the worktree. */
+  member: string;
+  /** Session bound to that member, or null when the ledger has no session. */
+  sessionId: string | null;
+}
+
 export interface RoomEntry {
   id: string;
   name: string;
   status: 'active' | 'archived';
   leadAgent: string | null;
+  /** Session that leads the room; used to detect "the current room". */
+  leadSessionId: string | null;
   createdAt: string;
   updatedAt: string;
   memberCount: number;
+  /** Active worktrees linked to the room members (deduplicated, sorted by path). */
+  worktrees: RoomWorktree[];
   repos: RepoEntry[];
   totals: { repos: number; files: number; dirtyFiles: number };
   /** Ledger paths that could not be mapped to a git repository (capped at 20). */

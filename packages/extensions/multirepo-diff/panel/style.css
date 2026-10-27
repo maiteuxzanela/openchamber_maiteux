@@ -363,6 +363,49 @@ body.mrd-modal-open {
   opacity: 0.82;
 }
 
+/* ---------- Contextual focus (TICKET-HARNESS-76) ----------
+ * The room bound to the active worktree/session is ranked first and carries a
+ * visible accent so it is found without scanning the list.
+ */
+
+.mrd-room.is-active-context,
+.mrd-room.mrd-room-focused {
+  border-color: var(--primary, var(--oc-primary, var(--oc-focus, #4c8dff)));
+  background: color-mix(
+    in srgb,
+    var(--primary, var(--oc-primary, var(--oc-focus, #4c8dff))) 10%,
+    var(--oc-elevated, #262626)
+  );
+  box-shadow: inset 3px 0 0 var(--primary, var(--oc-primary, var(--oc-focus, #4c8dff)));
+}
+
+.mrd-room.is-active-context .mrd-room-head,
+.mrd-room.mrd-room-focused .mrd-room-head {
+  background: linear-gradient(
+    to bottom,
+    color-mix(
+      in srgb,
+      var(--primary, var(--oc-primary, var(--oc-focus, #4c8dff))) 14%,
+      var(--oc-elevated, #262626)
+    ),
+    var(--oc-elevated, #262626)
+  );
+}
+
+.mrd-badge.is-context {
+  border: 1px solid
+    color-mix(in srgb, var(--primary, var(--oc-primary, var(--oc-focus, #4c8dff))) 60%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--primary, var(--oc-primary, var(--oc-focus, #4c8dff))) 18%,
+    var(--oc-elevated, #262626)
+  );
+  color: var(--primary, var(--oc-primary, var(--oc-focus, #4c8dff)));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 .mrd-room-head,
 .mrd-repo-head {
   display: flex;

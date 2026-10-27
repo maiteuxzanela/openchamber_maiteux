@@ -31,6 +31,7 @@ import type {
   RevertTargetResult,
   RoomEntry,
   RoomFileError,
+  RoomWorktree,
   RoomsResponse,
 } from './contract.ts';
 import {
@@ -51,7 +52,7 @@ import {
   hasHead,
   type StatusEntry,
 } from './git.ts';
-import { LedgerUnavailableError, readLedger, type LedgerRoom, type RoomStatusFilter } from './ledger.ts';
+import { LedgerUnavailableError, readLedger, type LedgerRoom, type LedgerWorktree, type RoomStatusFilter } from './ledger.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT ?? '');
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -304,6 +305,7 @@ const buildRepoEntry = async (
 const buildRoom = async (
   ledgerRoom: LedgerRoom,
   ledgerFiles: readonly string[],
+  ledgerWorktrees: readonly LedgerWorktree[],
   getContext: (root: string) => Promise<RepoContext>,
 ): Promise<RoomEntry> => {
   const grouped = new Map<string, FileTarget[]>();
@@ -348,14 +350,23 @@ const buildRoom = async (
     totals.dirtyFiles += repo.counts.files - repo.counts.clean;
   }
 
+  const worktrees: RoomWorktree[] = ledgerWorktrees.map((worktree) => ({
+    path: worktree.path,
+    branch: worktree.branch,
+    member: worktree.member,
+    sessionId: worktree.sessionId,
+  }));
+
   return {
     id: ledgerRoom.id,
     name: ledgerRoom.name,
     status: ledgerRoom.status,
     leadAgent: ledgerRoom.leadAgent,
+    leadSessionId: ledgerRoom.leadSessionId,
     createdAt: isoFromMs(ledgerRoom.createdAt),
     updatedAt: isoFromMs(ledgerRoom.updatedAt),
     memberCount: ledgerRoom.memberCount,
+    worktrees,
     repos,
     totals,
     errors,
@@ -391,7 +402,14 @@ const listRooms = async (url: URL): Promise<RoomsResponse> => {
   const getContext = createContextCache();
   const rooms: RoomEntry[] = [];
   for (const room of ledger.rooms) {
-    rooms.push(await buildRoom(room, ledger.filesByRoom.get(room.id) ?? [], getContext));
+    rooms.push(
+      await buildRoom(
+        room,
+        ledger.filesByRoom.get(room.id) ?? [],
+        ledger.worktreesByRoom.get(room.id) ?? [],
+        getContext,
+      ),
+    );
   }
   const response: RoomsResponse = {
     rooms,

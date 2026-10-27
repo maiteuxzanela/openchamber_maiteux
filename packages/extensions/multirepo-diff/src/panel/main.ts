@@ -32,6 +32,14 @@ import type {
   RevertResponse,
 } from '../service/contract.ts';
 import { createTranslator, type MessageKey, type Translator } from './i18n.ts';
+import {
+  findFocusedRoom,
+  matchRoomContext,
+  normalizeContextPath,
+  sortRoomsByContext,
+  type PanelContext,
+  type RoomContextMatch,
+} from './context.ts';
 
 /* ------------------------------------------------------------------ *
  * Errors
@@ -311,6 +319,13 @@ type RevertTarget =
 
 type ToastTone = 'success' | 'error' | 'info';
 
+type ContextUpdate = { directory?: string | null; sessionId?: string | null };
+
+type MountedPanel = {
+  /** Applies a `ready`/`directory`/`session` push (TICKET-HARNESS-76). */
+  updateContext: (next: ContextUpdate) => void;
+};
+
 type State = {
   rooms: RoomEntry[];
   database: string;
@@ -322,6 +337,8 @@ type State = {
   query: string;
   expandedRooms: Set<string>;
   expandedRepos: Set<string>;
+  /** Active directory/session used to rank rooms (TICKET-HARNESS-76). */
+  panelContext: PanelContext;
   defaultsApplied: boolean;
   selection: Selection | null;
   detailOpen: boolean;
@@ -366,7 +383,7 @@ type Refs = {
   toast: HTMLElement;
 };
 
-const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyContext): void => {
+const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyContext): MountedPanel => {
   const t: Translator = createTranslator(ready.locale);
   document.documentElement.lang = ready.locale || 'en';
 
@@ -381,6 +398,10 @@ const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyConte
     query: '',
     expandedRooms: new Set<string>(),
     expandedRepos: new Set<string>(),
+    panelContext: {
+      directory: normalizeContextPath(ready.directory),
+      sessionId: typeof ready.session?.id === 'string' && ready.session.id !== '' ? ready.session.id : null,
+    },
     defaultsApplied: false,
     selection: null,
     detailOpen: false,
@@ -672,26 +693,55 @@ const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyConte
     diffToken += 1;
   };
 
+  const expandRoom = (room: RoomEntry): void => {
+    state.expandedRooms.add(room.id);
+    const repo = room.repos.find((entry) => repoDirtyFiles(entry) > 0) ?? room.repos[0];
+    if (repo) state.expandedRepos.add(repoKey(room.id, repo.root));
+  };
+
   const applyDefaults = (): void => {
     if (state.defaultsApplied) return;
     state.defaultsApplied = true;
+    // The room bound to the active worktree/session always opens first
+    // (TICKET-HARNESS-76), then the newest dirty rooms fill the remaining slots.
+    const focused = findFocusedRoom(state.rooms, state.panelContext);
     let expanded = 0;
+    if (focused) {
+      expandRoom(focused);
+      expanded = 1;
+    }
     for (const room of state.rooms) {
+      if (focused !== null && room.id === focused.id) continue;
       if (room.totals.dirtyFiles <= 0) continue;
-      state.expandedRooms.add(room.id);
-      const repo = room.repos.find((entry) => repoDirtyFiles(entry) > 0) ?? room.repos[0];
-      if (repo) state.expandedRepos.add(repoKey(room.id, repo.root));
+      expandRoom(room);
       expanded += 1;
       if (expanded >= 3) break;
     }
     if (expanded === 0) {
       const first = state.rooms.find((room) => room.repos.length > 0);
-      if (first) {
-        state.expandedRooms.add(first.id);
-        const repo = first.repos[0];
-        if (repo) state.expandedRepos.add(repoKey(first.id, repo.root));
-      }
+      if (first) expandRoom(first);
     }
+  };
+
+  const updateContext = (next: ContextUpdate): void => {
+    const directory = normalizeContextPath(
+      next.directory !== undefined ? next.directory : state.panelContext.directory,
+    );
+    const rawSession = next.sessionId !== undefined ? next.sessionId : state.panelContext.sessionId;
+    const sessionId =
+      typeof rawSession === 'string' && rawSession.trim() !== '' ? rawSession.trim() : null;
+    if (directory === state.panelContext.directory && sessionId === state.panelContext.sessionId) {
+      return;
+    }
+    state.panelContext = { directory, sessionId };
+    if (!state.loaded) return;
+
+    state.rooms = sortRoomsByContext(state.rooms, state.panelContext);
+    const focused = findFocusedRoom(state.rooms, state.panelContext);
+    if (focused && !state.expandedRooms.has(focused.id)) {
+      expandRoom(focused);
+    }
+    render();
   };
 
   const loadRooms = async (refreshCache: boolean): Promise<void> => {
@@ -714,7 +764,10 @@ const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyConte
         path: '/api/multirepo/rooms',
         query,
       });
-      state.rooms = Array.isArray(data.rooms) ? data.rooms : [];
+      state.rooms = sortRoomsByContext(
+        Array.isArray(data.rooms) ? data.rooms : [],
+        state.panelContext,
+      );
       state.database = typeof data.database === 'string' ? data.database : '';
       state.generatedAt = typeof data.generatedAt === 'string' ? data.generatedAt : null;
       state.loaded = true;
@@ -1206,10 +1259,20 @@ const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyConte
     return box;
   };
 
-  const buildRoom = (room: RoomEntry, forceOpen: boolean): HTMLElement => {
+  const buildRoom = (
+    room: RoomEntry,
+    forceOpen: boolean,
+    contextMatch: RoomContextMatch | null,
+  ): HTMLElement => {
     const open = forceOpen || state.expandedRooms.has(room.id);
     const card = make('section', 'mrd-room');
     card.classList.toggle('is-archived', room.status === 'archived');
+    card.classList.toggle('is-active-context', contextMatch !== null);
+    card.classList.toggle('mrd-room-focused', contextMatch !== null);
+    if (contextMatch !== null) {
+      card.dataset['context'] = contextMatch.kind ?? 'context';
+      card.setAttribute('aria-current', 'true');
+    }
 
     const head = make('div', 'mrd-room-head');
     const toggle = make('button', 'mrd-disclosure is-room');
@@ -1227,6 +1290,12 @@ const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyConte
         room.status === 'archived' ? t('filterArchived') : t('filterActive'),
       ),
     );
+    if (contextMatch !== null) {
+      const badge = make('span', 'mrd-badge is-context', t('worktreeCurrent'));
+      const target = contextMatch.worktreePath ?? contextMatch.repoRoot;
+      if (target) badge.title = target;
+      line.append(badge);
+    }
     const sub = make(
       'span',
       'mrd-disclosure-sub',
@@ -1282,8 +1351,15 @@ const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyConte
     const scrollTop = refs.treeScroll.scrollTop;
     const rooms = visibleRooms();
     const queryActive = state.query !== '';
+    const focused = findFocusedRoom(state.rooms, state.panelContext);
     const cards: HTMLElement[] = [];
-    for (const room of rooms) cards.push(buildRoom(room, queryActive));
+    for (const room of rooms) {
+      const contextMatch =
+        focused !== null && focused.id === room.id
+          ? matchRoomContext(room, state.panelContext)
+          : null;
+      cards.push(buildRoom(room, queryActive, contextMatch));
+    }
     refs.treeScroll.replaceChildren(...cards);
 
     if (rooms.length === 0) {
@@ -1424,6 +1500,8 @@ const mount = (host: HostClient, rootElement: HTMLElement, ready: HostReadyConte
 
   render();
   void loadRooms(false);
+
+  return { updateContext };
 };
 
 /* ------------------------------------------------------------------ *
@@ -1453,12 +1531,21 @@ const host = connectHost();
 const rootElement = document.querySelector<HTMLElement>('#root');
 if (!rootElement) throw new Error('Multirepo Diff: missing #root');
 let mounted = false;
+let panel: MountedPanel | null = null;
 
 host.onReady((context: HostReadyContext) => {
   applyHostReady(context, document.documentElement);
-  if (mounted) return;
+  if (mounted) {
+    panel?.updateContext({ directory: context.directory, sessionId: context.session?.id ?? null });
+    return;
+  }
   mounted = true;
-  mount(host, rootElement, context);
+  panel = mount(host, rootElement, context);
+  // Directory/session pushes keep the contextual ranking current
+  // (TICKET-HARNESS-76). Subscribing after mount replays the last known
+  // directory synchronously, which the mount already applied (no-op).
+  host.onDirectory((directory) => panel?.updateContext({ directory }));
+  host.onSession((session) => panel?.updateContext({ sessionId: session?.id ?? null }));
 });
 
 window.addEventListener('pagehide', () => {
